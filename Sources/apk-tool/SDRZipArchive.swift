@@ -108,8 +108,8 @@ public final class SDRZipArchive {
         var out = [UInt8](repeating: 0, count: max(expected, 1024))
         var written = 0
 
-        try input.withUnsafeMutableBufferPointer { inBuf in
-            strm.next_in = inBuf.baseAddress
+        try input.withUnsafeBufferPointer { inBuf in
+            strm.next_in = UnsafeMutablePointer<UInt8>(mutating: inBuf.baseAddress)
             strm.avail_in = uInt(inBuf.count)
 
             while true {

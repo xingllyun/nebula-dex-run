@@ -92,7 +92,7 @@ public final class SDRArmInterpreter {
         let op0 = (insn >> 25) & 0xF
 
         switch op0 {
-        case 0b1000, 0b1001, 0b1010, 0b1011:
+        case 0b1000, 0b1001, 0b1010:
             // 数据立即数处理（含 MOVZ/MOVN/MOVK 体系）
             if (insn & 0x1F80_0000) == 0x1280_0000 || (insn & 0x7F80_0000) == 0x5280_0000 {
                 return executeMoveWide(insn)
@@ -102,7 +102,7 @@ public final class SDRArmInterpreter {
             }
             return executeLogicalImm(insn)
         case 0b1101, 0b1110, 0b1111:
-            return executeBranchOrSystem(insn)
+            return try executeBranchOrSystem(insn)
         case 0b1011:
             return executeAddSubReg(insn)
         default:
@@ -273,7 +273,7 @@ public final class SDRArmInterpreter {
         return .running
     }
 
-    private func executeBranchOrSystem(_ insn: UInt32) -> SDRInterpreterState {
+    private func executeBranchOrSystem(_ insn: UInt32) throws -> SDRInterpreterState {
         // SVC 系统调用
         if (insn & 0xFFE0_001F) == 0xD400_0001 {
             return try handleSVC(insn)

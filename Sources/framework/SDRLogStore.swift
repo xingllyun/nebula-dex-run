@@ -97,8 +97,9 @@ public final class SDRLogStore: ObservableObject {
 
     private func rollIfNeeded(current: URL) {
         let limit: UInt64 = 20 * 1024 * 1024
-        let size = (try? FileManager.default.attributesOfItem(atPath: current.path)[.size] as? UInt64) ?? 0
-        guard let size, size > limit else { return }
+        let attrs = try? FileManager.default.attributesOfItem(atPath: current.path)
+        let size = (attrs?[.size] as? UInt64) ?? 0
+        guard size > limit else { return }
         try? fileHandle?.close()
         fileHandle = nil
         let backup = current.deletingPathExtension().appendingPathExtension("1.log")

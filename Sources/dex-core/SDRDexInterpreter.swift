@@ -64,9 +64,8 @@ public final class SDRDexInterpreter {
                 frame.registers[v] = Int64(Int32(bitPattern: UInt32(code[frame.pc + 1]) | (UInt32(code[frame.pc + 2]) << 16)))
                 frame.pc += 3
             case 0x28:                                  // goto
-                var off = Int8(bitPattern: UInt8(unit >> 8))
-                off = Int(off)
-                frame.pc += Int(off)
+                let rawOffset = Int8(bitPattern: UInt8(unit >> 8))
+                frame.pc += Int(rawOffset)
             case 0x6E, 0x70, 0x71, 0x72:                // invoke-*
                 let name = SDRDexOpcode.names[opcode] ?? "invoke"
                 SDRLogger.d("dex", "\(name) method_idx=\(code[frame.pc + 1]) @pc=\(frame.pc)")
