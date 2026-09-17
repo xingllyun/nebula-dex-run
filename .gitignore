@@ -1,0 +1,24 @@
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# macOS
+.DS_Store
+
+# 凭据（严禁入库）
+*.credentials
+.gh_credentials
+*.p12
+*.mobileprovision
+*.keystore
+*.jks
+
+# 中间产物
+*.tmp
+*.log
