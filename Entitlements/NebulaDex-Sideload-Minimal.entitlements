@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  NebulaDex 权限描述（工程构建用）
+  侧载重签最小模板：全能签 / 轻松签 / PlumeImpactor 导入后重签即可
+  仅保留两项内存相关权限，不携带 App Group，兼容性最好
 Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
-  两项内核权限为侧载重签时由签名工具写入；无签名构建阶段仅声明，不生效。
 -->
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -11,9 +11,5 @@ Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协�
 	<true/>
 	<key>com.apple.developer.kernel.extended-virtual-addressing</key>
 	<true/>
-	<key>com.apple.security.application-groups</key>
-	<array>
-		<string>group.com.xingyun.NebulaDex</string>
-	</array>
 </dict>
 </plist>

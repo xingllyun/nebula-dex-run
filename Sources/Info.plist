@@ -22,6 +22,9 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<!-- iOS 26：false = 采用 Liquid Glass 新外观（未声明时系统默认亦为新外观） -->
+	<key>UIDesignRequiresCompatibility</key>
+	<false/>
 	<key>UILaunchScreen</key>
 	<dict>
 		<key>UIColorName</key>

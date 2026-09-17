@@ -1,3 +1,6 @@
+# Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
+# Copyright © 2026 Xingyun Cloud Tech | NebulaDex Project | Released under the MIT License
+
 name: iOS Unsigned Build
 
 on:

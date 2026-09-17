@@ -57,6 +57,21 @@ xcodebuild build -scheme NebulaDex -sdk iphoneos -configuration Release \
 
 未开启这两项会出现黑屏或闪退。
 
+- `com.apple.developer.kernel.increased-memory-limit`（大内存，iOS 15.0+）：提升单 App 常驻内存上限，约从物理内存的 50% 放宽到 75%
+- `com.apple.developer.kernel.extended-virtual-addressing`（大地址空间，iOS 14.0+）：扩展进程虚拟地址空间，缓解大量 `mmap` 的碎片化
+
+两者均通过**重签**写入签名，必须重装后生效。重签模板见
+[Entitlements/NebulaDex-Sideload-Minimal.entitlements](Entitlements/NebulaDex-Sideload-Minimal.entitlements)，
+权限说明见 [Entitlements/README.md](Entitlements/README.md)；
+SideStore / AltStore 免费签名会忽略该权限，需用 `GetMoreRam` 追加后重装。
+
+## iOS 26 适配
+
+- 版本判定改为语义化比较（26.0 / 26.2 / 26.4 等分点版本全部覆盖）
+- 外观默认采用 iOS 26 Liquid Glass
+- 运行时按侧载权限实测结果分配内存预算（受限 / 标准 / 扩展三档），并接入系统内存压力联动
+- 详情见 [docs/NebulaDex-大内存与大地址空间适配说明.md](docs/NebulaDex-大内存与大地址空间适配说明.md)
+
 ## 兼容性
 
 - 最低 iOS 16.0，适配至 iOS 26.x（iOS 27 未适配，产物可装不承诺）
@@ -64,4 +79,8 @@ xcodebuild build -scheme NebulaDex -sdk iphoneos -configuration Release \
 
 ## 许可
 
-MIT License，见 [LICENSE](LICENSE)。
+MIT License，见 [LICENSE](LICENSE)。源码文件头部均带完整 MIT 版权注释。
+
+---
+
+Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
