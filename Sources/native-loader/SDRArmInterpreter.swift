@@ -494,10 +494,14 @@ public final class SDRArmInterpreter {
         let a = truncate(gp(rn), width: width)
         let b = truncate(gp(rm), width: width)
 
+        // EXTR Xd, Xn, Xm, #lsb：结果为 (Xn:Xm) 的低 width 位，即
+        //   lsb == 0 → Xm
+        //   lsb >  0 → (Xn << (width - lsb)) | (Xm >> lsb)
+        // 其中 a = Xn（高位操作数）、b = Xm（低位操作数），两者不可交换。
         let amount = lsb % width
         let result = amount == 0
-            ? a
-            : ((a >> UInt64(amount)) | (b << UInt64(width - amount))) & (width == 64 ? UInt64.max : 0xFFFF_FFFF)
+            ? b
+            : ((b >> UInt64(amount)) | (a << UInt64(width - amount))) & (width == 64 ? UInt64.max : 0xFFFF_FFFF)
         setGp(rd, result)
         return .running
     }
@@ -627,8 +631,10 @@ public final class SDRArmInterpreter {
         let rnValue = gp(rn)
         let rmValue = gp(rm)
         var value: UInt64
+        // CSEL/CSINC/CSINV/CSNEG 四个兄弟指令在条件成立时统一取 Xn；
+        // 仅条件不成立时按 (op, o2) 对 Xm 做 直取 / +1 / 取反 / 取负 变换。
         if SDRAlu.conditionHolds(cond, nzcv: context.nzcv) {
-            value = op == 0 ? rnValue : ~rnValue
+            value = rnValue
         } else if op == 0 {
             value = o2 == 0 ? rmValue : rmValue &+ 1
         } else {
@@ -940,7 +946,10 @@ public final class SDRArmInterpreter {
             default: elementWidth = 16
             }
         } else {
-            elementWidth = opc == 0b00 ? 4 : 8
+            // 非 SIMD：opc=00 → 32 位元素；opc=01 → LDPSW（元素宽仍为 4，加载后符号扩展）；
+            // opc=10 → 64 位元素。imm7 的缩放系数必须与真实元素宽度一致，
+            // 否则 LDPSW 会按 8 字节步长寻址而读到错误地址。
+            elementWidth = opc == 0b10 ? 8 : 4
         }
 
         let base = rn == 31 ? context.sp : context.x[rn]
