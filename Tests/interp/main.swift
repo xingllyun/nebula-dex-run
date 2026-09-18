@@ -83,8 +83,9 @@ for c in doc.cases {
         basedOnAvailableBytes: 0)
     let services = SDRSystemServices()
 
+    // 代码段在装载阶段需要写入机器码，故此处同时开启写权限（仅测试用）
     guard memory.map(name: "code", base: codeBase, size: UInt64(doc.code_size),
-                     readable: true, writable: false, executable: true) else {
+                     readable: true, writable: true, executable: true) else {
         print("FAIL [\(c.name)] 代码段映射失败")
         failedCases.append(c.name)
         continue
