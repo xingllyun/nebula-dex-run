@@ -117,8 +117,14 @@ public enum SDRSystemProbe {
     }
 
     /// os_proc_available_memory()：当前进程在触发内存上限前还可分配的字节数
+    /// 说明：该接口为 iOS 专属；非 iOS 平台（如 CI 上的 macOS 命令行测试）退回物理内存的一半作为估计值，
+    /// 保证解释器核心可在 macOS 上编译并完成指令级验收。
     public static func availableMemoryBytes() -> UInt64 {
+        #if os(iOS)
         return UInt64(os_proc_available_memory())
+        #else
+        return ProcessInfo.processInfo.physicalMemory / 2
+        #endif
     }
 
     /// task_info(TASK_VM_INFO)：常驻占用与虚拟地址空间用量
