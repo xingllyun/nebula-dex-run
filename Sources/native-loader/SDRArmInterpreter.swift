@@ -248,8 +248,10 @@ public final class SDRArmInterpreter {
 
     @inline(__always)
     private func signExtend(_ value: UInt64, bits: Int) -> UInt64 {
+        guard bits < 64 else { return value }
         let shift = UInt64(64 - bits)
-        return (value << shift) >> shift
+        // 先左移截断，再按有符号右移，保证高位按符号位填充（UInt64 的逻辑右移不扩展符号）
+        return UInt64(bitPattern: Int64(bitPattern: value << shift) >> shift)
     }
 
     // MARK: - 标志计算
@@ -404,21 +406,45 @@ public final class SDRArmInterpreter {
         let rd = Int(insn & 0x1F)
         let width = sf == 1 ? 64 : 32
 
-        let (wmask, tmask) = decodeBitMasks(n: n, imms: imms, immr: immr, width: width)
         let src = truncate(gp(rn), width: width)
-        let bot = src & wmask
+
+        if opc == 0b01 {                                    // BFM：把源字段搬到目标位置
+            let immsI = Int(imms)
+            let immrI = Int(immr)
+            let fieldLen: Int
+            let srcStart: Int
+            let targetStart: Int
+            if immrI <= immsI {
+                fieldLen = immsI - immrI + 1
+                srcStart = immrI
+                targetStart = 0
+            } else {
+                fieldLen = immsI + 1
+                srcStart = 0
+                targetStart = width - immrI
+            }
+            let len = min(fieldLen, width)
+            let fieldMask: UInt64 = len >= 64 ? UInt64.max : ((UInt64(1) << UInt64(len)) - 1)
+            let field = (src >> UInt64(srcStart)) & fieldMask
+            let rotate = (width - targetStart) % width
+            let placed = shiftedValue(field, type: 0b11, amount: rotate, width: width)
+            let dstMask = shiftedValue(fieldMask, type: 0b11, amount: rotate, width: width)
+            let old = truncate(gp(rd), width: width)
+            setGp(rd, (old & ~dstMask) | (placed & dstMask))
+            return .running
+        }
+
+        let (wmask, tmask) = decodeBitMasks(n: n, imms: imms, immr: immr, width: width)
+        // UBFM/SBFM：源操作数先按 immr 循环右移，再按 wmask 取字段
+        let rotated = shiftedValue(src, type: 0b11, amount: Int(immr), width: width)
+        let bot = rotated & wmask
         var top: UInt64 = 0
-        if opc == 0b00 {                                    // SBFM
+        if opc == 0b00 {                                    // SBFM：按原始源的第 imms 位扩展
             top = ((src >> UInt64(imms)) & 1) == 1 ? UInt64.max : 0
-        } else if opc == 0b01 {                             // BFM
-            top = truncate(gp(rd), width: width)
         }
         var dst = (top & ~tmask) | (bot & tmask)
-        switch opc {
-        case 0b00: dst = signExtend(dst, bits: width)       // 符号扩展
-        case 0b01: break
-        default:   dst = truncate(dst, width: width)        // UBFM
-        }
+        if opc == 0b00 { dst = signExtend(dst, bits: width) }   // 符号扩展
+        else { dst = truncate(dst, width: width) }              // UBFM
         setGp(rd, dst)
         return .running
     }
