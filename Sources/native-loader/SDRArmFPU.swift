@@ -355,12 +355,12 @@ public enum SDRFPLogic {
         let frac = UInt64(imm8 & 0xF)
 
         if isDouble {
-            var exp: UInt64 = (~b & 1) << 10
+            var exp: UInt64 = UInt64(~b & 1) << 10
             if b == 1 { exp |= UInt64(0xFF) << 2 }
             exp |= UInt64((c << 1) | d)
             return (UInt64(sign) << 63) | (exp << 52) | (frac << 48)
         } else {
-            var exp: UInt64 = (~b & 1) << 7
+            var exp: UInt64 = UInt64(~b & 1) << 7
             if b == 1 { exp |= UInt64(0x1F) << 2 }
             exp |= UInt64((c << 1) | d)
             return (UInt64(sign) << 31) | (exp << 23) | (frac << 19)
