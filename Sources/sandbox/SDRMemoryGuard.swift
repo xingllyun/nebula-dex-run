@@ -109,15 +109,79 @@ public final class SDRMemoryGuard {
         guard let seg = segment(for: address), seg.writable else {
             throw SDRAppError(.sandboxDenied, "非法写：0x\(String(address, radix: 16))")
         }
-        guard var buf = storage[seg.base] else {
+        guard storage[seg.base] != nil else {
             throw SDRAppError(.soImageInvalid, "段无后备存储：\(seg.name)")
         }
         let start = Int(address - seg.base)
-        guard start + bytes.count <= buf.count else {
-            throw SDRAppError(.sandboxDenied, "越界写：\(start)+\(bytes.count) > \(buf.count)")
+        // 原地写入：借字典下标的 mutating 访问器直通底层缓冲区，
+        // 避免原先 `guard var buf = storage[...]` 触发的整段写时复制
+        // （单次写由 O(段大小) 降为 O(写入字节数)，解释器访存热路径收益显著）。
+        var wrote = false
+        var limit = 0
+        storage[seg.base]?.withUnsafeMutableBufferPointer { buf in
+            limit = buf.count
+            guard start + bytes.count <= buf.count else { return }
+            bytes.withUnsafeBufferPointer { src in
+                if let srcBase = src.baseAddress, let dstBase = buf.baseAddress, src.count > 0 {
+                    memcpy(dstBase + start, srcBase, src.count)
+                }
+            }
+            wrote = true
         }
-        buf.replaceSubrange(start..<(start + bytes.count), with: bytes)
-        storage[seg.base] = buf
+        guard wrote else {
+            throw SDRAppError(.sandboxDenied, "越界写：\(start)+\(bytes.count) > \(limit)")
+        }
+    }
+
+    /// 标量读（count ∈ 1/2/4/8，小端），供解释器访存热路径使用：
+    /// 语义与 `read` 完全一致（同样的段权限与越界校验、同样的错误信息），
+    /// 但不为单次访存分配临时字节数组。
+    public func readScalar(_ address: UInt64, count: Int) throws -> UInt64 {
+        guard let seg = segment(for: address), seg.readable else {
+            throw SDRAppError(.sandboxDenied, "非法读：0x\(String(address, radix: 16))")
+        }
+        guard let buf = storage[seg.base] else {
+            throw SDRAppError(.soImageInvalid, "段无后备存储：\(seg.name)")
+        }
+        let start = Int(address - seg.base)
+        guard start + count <= buf.count else {
+            throw SDRAppError(.sandboxDenied, "越界读：\(start)+\(count) > \(buf.count)")
+        }
+        var value: UInt64 = 0
+        buf.withUnsafeBufferPointer { raw in
+            for i in 0..<count {
+                value |= UInt64(raw[start + i]) << (8 * UInt64(i))
+            }
+        }
+        return value
+    }
+
+    /// 标量写（count ∈ 1/2/4/8，小端），语义与 `write` 一致，原地写入、无临时分配。
+    public func writeScalar(_ address: UInt64, value: UInt64, count: Int) throws {
+        guard let seg = segment(for: address), seg.writable else {
+            throw SDRAppError(.sandboxDenied, "非法写：0x\(String(address, radix: 16))")
+        }
+        guard storage[seg.base] != nil else {
+            throw SDRAppError(.soImageInvalid, "段无后备存储：\(seg.name)")
+        }
+        let start = Int(address - seg.base)
+        var wrote = false
+        var limit = 0
+        var raw = value
+        storage[seg.base]?.withUnsafeMutableBufferPointer { buf in
+            limit = buf.count
+            guard start + count <= buf.count else { return }
+            withUnsafeBytes(of: &raw) { src in
+                let n = Swift.min(count, src.count)
+                if let dstBase = buf.baseAddress, n > 0 {
+                    memcpy(dstBase + start, src.baseAddress!, n)
+                }
+            }
+            wrote = true
+        }
+        guard wrote else {
+            throw SDRAppError(.sandboxDenied, "越界写：\(start)+\(count) > \(limit)")
+        }
     }
 
     /// 取代码段字节区间，供指令解释器取指（不申请可执行内存）

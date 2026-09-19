@@ -97,11 +97,32 @@ public final class SDRArmInterpreter {
     public var traceEnabled: Bool = false
 
     /// 取指缓存窗口（减少段读取的数组分配，仅用于只读代码段）
-    private static let fetchWindow = 256
+    /// 窗口越大，分支/循环回边跨窗口后的命中率越高；取 1 KiB（= 256 条指令）。
+    private static let fetchWindow = 1024
     private var fetchCacheBase: UInt64 = 0
     private var fetchCache: [UInt8] = []
     /// 由分支指令写入；step 结束时若存在则作为下一条 PC
     private var pendingBranch: UInt64?
+
+    // MARK: - 译码缓存
+
+    /// 译码类别（1 起编，0 保留为「槽未使用」哨兵值）
+    private enum DecodeKind: UInt8 {
+        case moveWide = 1, bitfield, extract, logicalImm, addSubImm, adr
+        case logicalReg, addSubReg, addSubExtended, addSubCarry
+        case condCompare, condSelect, dp12, multiply
+        case loadStore, loadStorePair, branchOrSystem
+        case fpu, neon, unclassified
+    }
+
+    /// 直接映射译码缓存：4096 槽，槽内保存完整指令字做校验，
+    /// 命中即跳过分类链（同一指令字重复执行时不再重复位域判定）。
+    private static let decodeSlotMask = 4095
+    private var decodeSlotKeys = [UInt32](repeating: 0, count: 4096)
+    private var decodeSlotKinds = [UInt8](repeating: 0, count: 4096)
+    /// 译码缓存命中 / 未命中统计（供性能核对，不影响执行语义）
+    public private(set) var decodeCacheHits: Int = 0
+    public private(set) var decodeCacheMisses: Int = 0
 
     public init(context: SDRCpuContext, memory: SDRMemoryGuard,
                 services: SDRSystemServices, budget: Int = 500_000) {
@@ -145,12 +166,17 @@ public final class SDRArmInterpreter {
             | (UInt32(bytes[offset + 3]) << 24)
     }
 
+    @inline(__always)
     private func fetch() throws -> UInt32 {
         let pc = context.pc
-        if !fetchCache.isEmpty,
-           pc >= fetchCacheBase,
-           pc + 4 <= fetchCacheBase + UInt64(fetchCache.count) {
-            return decodeLE(fetchCache, Int(pc - fetchCacheBase))
+        // 用单次无符号比较替代 (pc >= base && pc + 4 <= base + count)：
+        // 窗口内偏移量 pc - base 落在 [0, count - 4] 即命中，且规避加法溢出。
+        let win = fetchCache.count
+        if win >= 4 {
+            let offset = pc &- fetchCacheBase
+            if offset <= UInt64(win - 4) {
+                return decodeLE(fetchCache, Int(offset))
+            }
         }
         if let window = try? memory.read(pc, count: Self.fetchWindow) {
             fetchCacheBase = pc
@@ -175,44 +201,103 @@ public final class SDRArmInterpreter {
 
     // MARK: - 解码分派
 
+    /// 译码槽索引：Knuth 乘法散列取高位，直接映射 4096 槽
+    @inline(__always)
+    private func decodeSlotIndex(_ insn: UInt32) -> Int {
+        return Int((insn &* 0x9E37_79B9) >> 20) & Self.decodeSlotMask
+    }
+
     private func execute(_ insn: UInt32) throws -> SDRInterpreterState {
-        // 0. A64 基础指令集（非 SIMD）
-        if (insn & 0x1F00_0000) == 0x1E00_0000 {
-            if context.fpu.execute(insn: insn, context: context) { return .running }
-            return unsupported(insn, "FP/SIMD")
+        // 译码缓存命中：跳过整条分类链，直接按已记录类别分派。
+        // 注意：分类结果只与指令字本身有关，与寄存器/内存状态无关，故缓存始终安全。
+        let slot = decodeSlotIndex(insn)
+        if decodeSlotKeys[slot] == insn {
+            let cached = decodeSlotKinds[slot]
+            if cached != 0, let kind = DecodeKind(rawValue: cached) {
+                decodeCacheHits += 1
+                return try dispatch(kind, insn)
+            }
         }
+        decodeCacheMisses += 1
+        let kind = classify(insn)
+        decodeSlotKeys[slot] = insn
+        decodeSlotKinds[slot] = kind.rawValue
+        return try dispatch(kind, insn)
+    }
+
+    /// 指令译码分类（仅在译码缓存未命中时执行）
+    ///
+    /// 注意：分类顺序必须与原始位域判定顺序严格一致。掩码族之间存在非互斥情形
+    /// （例：CCMP/CCMN 的 sf=1 形式 0xFA4xxxxx 同时满足 bits[29:27]=111 的访存掩码），
+    /// 重排判定顺序会改变归类结果，故此处不做「高频指令前置」类优化，
+    /// 去重开销一律由译码缓存承担。
+    private func classify(_ insn: UInt32) -> DecodeKind {
+        // 0. A64 基础指令集（非 SIMD）
+        if (insn & 0x1F00_0000) == 0x1E00_0000 { return .fpu }
+
+        // 0b. 高级 SIMD（NEON）整数通路：ASIMD 向量空间 bits[28:24] = 01110 / 01111
+        if (insn & 0x1F00_0000) == 0x0E00_0000 || (insn & 0x1F00_0000) == 0x0F00_0000 { return .neon }
 
         // 1. 数据立即数
-        if (insn & 0x1F80_0000) == 0x1280_0000 { return executeMoveWide(insn) }     // 100101
-        if (insn & 0x1F80_0000) == 0x1300_0000 { return executeBitfield(insn) }     // 100110
-        if (insn & 0x1F80_0000) == 0x1380_0000 { return executeExtract(insn) }      // 100111
-        if (insn & 0x1F80_0000) == 0x1200_0000 { return executeLogicalImm(insn) }   // 100100
-        if (insn & 0x1F00_0000) == 0x1100_0000 { return executeAddSubImm(insn) }    // 10001
-        if (insn & 0x1F00_0000) == 0x1000_0000 { return executeADR(insn) }          // 10000
+        if (insn & 0x1F80_0000) == 0x1280_0000 { return .moveWide }     // 100101
+        if (insn & 0x1F80_0000) == 0x1300_0000 { return .bitfield }     // 100110
+        if (insn & 0x1F80_0000) == 0x1380_0000 { return .extract }      // 100111
+        if (insn & 0x1F80_0000) == 0x1200_0000 { return .logicalImm }   // 100100
+        if (insn & 0x1F00_0000) == 0x1100_0000 { return .addSubImm }    // 10001
+        if (insn & 0x1F00_0000) == 0x1000_0000 { return .adr }          // 10000
 
         // 2. 数据寄存器
-        if (insn & 0x1F00_0000) == 0x0A00_0000 { return executeLogicalReg(insn) }   // 01010
-        if (insn & 0x1F00_0000) == 0x0B00_0000 {                                    // 01011
-            return ((insn >> 21) & 1) == 1 ? executeAddSubExtended(insn) : executeAddSubReg(insn)
+        if (insn & 0x1F00_0000) == 0x0A00_0000 { return .logicalReg }   // 01010
+        if (insn & 0x1F00_0000) == 0x0B00_0000 {                        // 01011
+            return ((insn >> 21) & 1) == 1 ? .addSubExtended : .addSubReg
         }
-        if (insn & 0x1FE0_0000) == 0x1A00_0000 { return executeAddSubCarry(insn) }  // 11010000
-        if (insn & 0x1FE0_0000) == 0x1A40_0000 { return executeConditionalCompare(insn) }
-        if (insn & 0x1FE0_0000) == 0x1A80_0000 { return executeConditionalSelect(insn) }
-        if (insn & 0x1FE0_0000) == 0x1AC0_0000 { return executeDataProcessing12(insn) }
-        if (insn & 0x1F00_0000) == 0x1B00_0000 { return executeMultiply(insn) }      // 11011
+        if (insn & 0x1FE0_0000) == 0x1A00_0000 { return .addSubCarry }  // 11010000
+        if (insn & 0x1FE0_0000) == 0x1A40_0000 { return .condCompare }
+        if (insn & 0x1FE0_0000) == 0x1A80_0000 { return .condSelect }
+        if (insn & 0x1FE0_0000) == 0x1AC0_0000 { return .dp12 }
+        if (insn & 0x1F00_0000) == 0x1B00_0000 { return .multiply }     // 11011
 
         // 3. 访存
-        if (insn & 0x3800_0000) == 0x3800_0000 { return try executeLoadStore(insn) }      // bits[29:27]=111
-        if (insn & 0x3800_0000) == 0x2800_0000 { return try executeLoadStorePair(insn) }  // bits[29:27]=101
+        if (insn & 0x3800_0000) == 0x3800_0000 { return .loadStore }      // bits[29:27]=111
+        if (insn & 0x3800_0000) == 0x2800_0000 { return .loadStorePair }  // bits[29:27]=101
 
         // 4. 分支与系统
         if (insn & 0x1C00_0000) == 0x1400_0000 || (insn & 0xFF00_0000) == 0xD400_0000
-            || (insn & 0xFF00_0000) == 0xD500_0000 {
-            return try executeBranchOrSystem(insn)
-        }
-        if (insn & 0x7C00_0000) == 0x1400_0000 { return try executeBranchOrSystem(insn) }
+            || (insn & 0xFF00_0000) == 0xD500_0000 { return .branchOrSystem }
+        if (insn & 0x7C00_0000) == 0x1400_0000 { return .branchOrSystem }
 
-        return unsupported(insn, "未分类")
+        return .unclassified
+    }
+
+    /// 按译码类别分派到具体执行单元
+    @inline(__always)
+    private func dispatch(_ kind: DecodeKind, _ insn: UInt32) throws -> SDRInterpreterState {
+        switch kind {
+        case .fpu:
+            if context.fpu.execute(insn: insn, context: context) { return .running }
+            return unsupported(insn, "FP/SIMD")
+        case .neon:
+            if SDRArmNEON.execute(insn: insn, context: context, fpu: context.fpu) { return .running }
+            return unsupported(insn, "NEON")
+        case .moveWide: return executeMoveWide(insn)
+        case .bitfield: return executeBitfield(insn)
+        case .extract: return executeExtract(insn)
+        case .logicalImm: return executeLogicalImm(insn)
+        case .addSubImm: return executeAddSubImm(insn)
+        case .adr: return executeADR(insn)
+        case .logicalReg: return executeLogicalReg(insn)
+        case .addSubReg: return executeAddSubReg(insn)
+        case .addSubExtended: return executeAddSubExtended(insn)
+        case .addSubCarry: return executeAddSubCarry(insn)
+        case .condCompare: return executeConditionalCompare(insn)
+        case .condSelect: return executeConditionalSelect(insn)
+        case .dp12: return executeDataProcessing12(insn)
+        case .multiply: return executeMultiply(insn)
+        case .loadStore: return try executeLoadStore(insn)
+        case .loadStorePair: return try executeLoadStorePair(insn)
+        case .branchOrSystem: return try executeBranchOrSystem(insn)
+        case .unclassified: return unsupported(insn, "未分类")
+        }
     }
 
     private func unsupported(_ insn: UInt32, _ kind: String) -> SDRInterpreterState {
@@ -825,6 +910,8 @@ public final class SDRArmInterpreter {
     // MARK: - 访存
 
     private func readBytes(_ address: UInt64, count: Int) throws -> UInt64 {
+        // 标量热路径：1/2/4/8 字节直接读取，免去每次访存的临时字节数组分配
+        if count <= 8 { return try memory.readScalar(address, count: count) }
         let bytes = try memory.read(address, count: count)
         var value: UInt64 = 0
         for i in 0..<count { value |= UInt64(bytes[i]) << (8 * UInt64(i)) }
@@ -832,6 +919,7 @@ public final class SDRArmInterpreter {
     }
 
     private func writeBytes(_ address: UInt64, value: UInt64, count: Int) throws {
+        if count <= 8 { return try memory.writeScalar(address, value: value, count: count) }
         var bytes = [UInt8](repeating: 0, count: count)
         for i in 0..<count { bytes[i] = UInt8((value >> (8 * UInt64(i))) & 0xFF) }
         try memory.write(address, bytes: bytes)

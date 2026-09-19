@@ -18,6 +18,12 @@ struct TestCase: Decodable {
     let code_hex: String
     let expect_x: [String: String]
     let expect_v: [String: String]
+    /// NEON 128 位向量的高 64 位（Q = 1 时由 vh 承载；缺省表示不校验高半）
+    let expect_vh: [String: String]?
+    /// 执行前注入 v 寄存器低 64 位初值（NEON 向量测试必需）
+    let init_v: [String: String]?
+    /// 执行前注入 v 寄存器高 64 位初值
+    let init_vh: [String: String]?
     let expect_sp: String
     let expect_nzcv: String
 }
@@ -109,6 +115,18 @@ for c in doc.cases {
     let interp = SDRArmInterpreter(context: ctx, memory: memory, services: services, budget: 100_000)
     services.bind(interpreter: interp)
 
+    // NEON 向量用例：执行前注入 v 寄存器 128 位初值（低 64 位 / 高 64 位）
+    if let iv = c.init_v {
+        for (key, value) in iv {
+            if let index = Int(key), index >= 0, index < 32 { ctx.fpu.v[index] = parseHex(value) }
+        }
+    }
+    if let ivh = c.init_vh {
+        for (key, value) in ivh {
+            if let index = Int(key), index >= 0, index < 32 { ctx.fpu.vh[index] = parseHex(value) }
+        }
+    }
+
     do {
         for i in 0..<c.steps {
             let bytes = try memory.read(ctx.pc, count: 4)
@@ -141,6 +159,11 @@ for c in doc.cases {
     }
     for i in 0..<32 {
         if let want = c.expect_v[String(i)] { check("v\(i)", ctx.fpu.v[i], want) }
+    }
+    if let wantVh = c.expect_vh {
+        for i in 0..<32 {
+            if let want = wantVh[String(i)] { check("vh\(i)", ctx.fpu.vh[i], want) }
+        }
     }
     check("sp", ctx.sp, c.expect_sp)
     check("nzcv", UInt64(ctx.nzcv), c.expect_nzcv)

@@ -1,8 +1,9 @@
 # Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
 # Copyright © 2026 Xingyun Cloud Tech | NebulaDex Project | Released under the MIT License
 #
-# 阶段一验收：AArch64 解释器指令级自测（基线向量 + 加固回归向量）
-# 不依赖 iOS 模拟器，直接在 macOS runner 上以命令行方式编译解释器核心并跑黄金向量。
+# 阶段一验收：AArch64 解释器指令级自测（基线向量 + 加固回归向量 + NEON 整数向量 + NEON 边界向量）
+# 不依赖 iOS 模拟器，直接在 macOS runner 上以命令行方式编译解释器核心并跑黄金向量，
+# 最后附一轮吞吐量基准（信息性输出，不作为门禁）。
 
 name: AArch64 Interpreter Tests
 
@@ -17,7 +18,7 @@ permissions:
 jobs:
   interp-test:
     runs-on: macos-26
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -28,30 +29,31 @@ jobs:
           swift --version
           sw_vers
 
-      - name: Build interpreter test harness
+      - name: Build interpreter test harness and bench
         run: |
           set -euo pipefail
-          swiftc -swift-version 5 -O -o interp-test \
-            Sources/native-loader/SDRArmFPU.swift \
-            Sources/native-loader/SDRArmInterpreter.swift \
-            Sources/native-loader/SDRElfParser.swift \
-            Sources/native-loader/SDRImageLoader.swift \
-            Sources/native-loader/SDRRelocator.swift \
-            Sources/sandbox/SDRMemoryBudget.swift \
-            Sources/sandbox/SDRMemoryGuard.swift \
-            Sources/sandbox/SDRMemoryPressureMonitor.swift \
-            Sources/sandbox/SDRSandbox.swift \
-            Sources/tools/SDRAlu.swift \
-            Sources/tools/SDRByteReader.swift \
-            Sources/tools/SDRLogger.swift \
-            Sources/tools/SDRSystemProbe.swift \
-            Sources/tools/SDRTime.swift \
-            Sources/framework/SDRCore.swift \
-            Sources/framework/SDREventBus.swift \
-            Sources/framework/SDRLicense.swift \
-            Sources/framework/SDRLogStore.swift \
-            Sources/ios-adapter/SDRSystemServices.swift \
-            Tests/interp/main.swift
+          FILES="Sources/native-loader/SDRArmFPU.swift \
+                 Sources/native-loader/SDRArmNEON.swift \
+                 Sources/native-loader/SDRArmInterpreter.swift \
+                 Sources/native-loader/SDRElfParser.swift \
+                 Sources/native-loader/SDRImageLoader.swift \
+                 Sources/native-loader/SDRRelocator.swift \
+                 Sources/sandbox/SDRMemoryBudget.swift \
+                 Sources/sandbox/SDRMemoryGuard.swift \
+                 Sources/sandbox/SDRMemoryPressureMonitor.swift \
+                 Sources/sandbox/SDRSandbox.swift \
+                 Sources/tools/SDRAlu.swift \
+                 Sources/tools/SDRByteReader.swift \
+                 Sources/tools/SDRLogger.swift \
+                 Sources/tools/SDRSystemProbe.swift \
+                 Sources/tools/SDRTime.swift \
+                 Sources/framework/SDRCore.swift \
+                 Sources/framework/SDREventBus.swift \
+                 Sources/framework/SDRLicense.swift \
+                 Sources/framework/SDRLogStore.swift \
+                 Sources/ios-adapter/SDRSystemServices.swift"
+          swiftc -swift-version 5 -O -o interp-test $FILES Tests/interp/main.swift
+          swiftc -swift-version 5 -O -o bench $FILES Tests/interp/bench.swift
 
       - name: Run acceptance vectors (baseline)
         run: |
@@ -62,3 +64,18 @@ jobs:
         run: |
           set -euo pipefail
           ./interp-test Tests/interp/vectors_hardening.json
+
+      - name: Run NEON integer vectors
+        run: |
+          set -euo pipefail
+          ./interp-test Tests/interp/vectors_neon.json
+
+      - name: Run NEON boundary vectors
+        run: |
+          set -euo pipefail
+          ./interp-test Tests/interp/vectors_neon2.json
+
+      - name: Throughput benchmark (informational)
+        run: |
+          set -euo pipefail
+          ./bench Tests/interp/bench.json 3 || true

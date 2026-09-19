@@ -72,6 +72,12 @@ SideStore / AltStore 免费签名会忽略该权限，需用 `GetMoreRam` 追加
 - 运行时按侧载权限实测结果分配内存预算（受限 / 标准 / 扩展三档），并接入系统内存压力联动
 - 详情见 [docs/NebulaDex-大内存与大地址空间适配说明.md](docs/NebulaDex-大内存与大地址空间适配说明.md)
 
+## 解释器验收与性能
+
+阶段一 AArch64 解释器的指令覆盖范围、四套黄金向量（252 用例 / 16606 校项）与吞吐量基准（+118.7%）见
+[docs/NebulaDex-AArch64解释器阶段一验收与性能报告.md](docs/NebulaDex-AArch64解释器阶段一验收与性能报告.md)；
+CI 门禁见 [.github/workflows/interp-test.yml](.github/workflows/interp-test.yml)。
+
 ## 兼容性
 
 - 最低 iOS 16.0，适配至 iOS 26.x（iOS 27 未适配，产物可装不承诺）
