@@ -143,6 +143,8 @@ public final class SDRArmInterpreter {
             guard executedCount < instructionBudget else {
                 throw SDRAppError(.soImageInvalid, "解释执行超出指令预算")
             }
+            // guest 调用 exit / exit_group 后由代理层置位，主循环据此收口
+            if services.exitRequested { break }
             guard let insn = try? fetch() else {
                 throw SDRAppError(.soImageInvalid, "取指失败 @\(String(context.pc, radix: 16))")
             }
