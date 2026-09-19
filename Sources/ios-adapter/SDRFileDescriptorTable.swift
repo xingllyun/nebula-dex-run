@@ -121,20 +121,26 @@ public final class SDRFileDescriptorTable {
     public func updateOffset(_ fd: Int32, to offset: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        entries[fd]?.offset = offset
+        guard var current = entries[fd] else { return }
+        current.offset = offset
+        entries[fd] = current
     }
 
     public func advanceOffset(_ fd: Int32, by delta: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        entries[fd]?.offset = (entries[fd]?.offset ?? 0) + delta
+        guard var current = entries[fd] else { return }
+        current.offset += delta
+        entries[fd] = current
     }
 
     /// 更新已登记文件的大小（写入 / 截断后调用，保证 lseek(SEEK_END) 与 fstat 正确）
     public func updateSize(_ fd: Int32, to size: UInt64) {
         lock.lock()
         defer { lock.unlock() }
-        entries[fd]?.size = size
+        guard var current = entries[fd] else { return }
+        current.size = size
+        entries[fd] = current
     }
 
     /// 关闭 fd；标准流不可关闭（返回 false）

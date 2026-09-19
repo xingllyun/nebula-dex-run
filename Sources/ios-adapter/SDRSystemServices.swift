@@ -307,7 +307,7 @@ public final class SDRSystemServices {
                 }
                 try entry.handle.write(contentsOf: Data(bytes))
                 let written = UInt64(bytes.count)
-                let position = try entry.handle.offsetInFile
+                let position = entry.handle.offsetInFile
                 self.fileDescriptors.updateOffset(fd, to: position)
                 self.fileDescriptors.updateSize(fd, to: Swift.max(entry.size, position))
                 return written
@@ -716,8 +716,7 @@ public final class SDRSystemServices {
             return mapped
         }
 
-        register(number: SDRSyscallNumber.munmap, name: "munmap") { [weak self] address, length, _, _, _, _, interp in
-            guard self != nil else { return Self.failure(SDRSyscallNumber.Errno.einval) }
+        register(number: SDRSyscallNumber.munmap, name: "munmap") { address, length, _, _, _, _, interp in
             guard length > 0 else { return Self.failure(SDRSyscallNumber.Errno.einval) }
             guard interp.memory.unmap(address: address, size: length) else {
                 return Self.failure(SDRSyscallNumber.Errno.einval)
@@ -761,8 +760,7 @@ public final class SDRSystemServices {
         }
 
         register(number: SDRSyscallNumber.madvise, name: "madvise") { _, _, _, _, _, _, _ in 0 }
-        register(number: SDRSyscallNumber.msync, name: "msync") { [weak self] address, length, _, _, _, _, interp in
-            guard self != nil else { return Self.failure(SDRSyscallNumber.Errno.einval) }
+        register(number: SDRSyscallNumber.msync, name: "msync") { address, length, _, _, _, _, interp in
             return interp.memory.segment(for: address) != nil || length == 0
                 ? 0 : Self.failure(SDRSyscallNumber.Errno.enomem)
         }
@@ -827,12 +825,12 @@ public final class SDRSystemServices {
         register(number: SDRSyscallNumber.sched_yield, name: "sched_yield") { _, _, _, _, _, _, _ in 0 }
         register(number: SDRSyscallNumber.prctl, name: "prctl") { _, _, _, _, _, _, _ in 0 }
         register(number: SDRSyscallNumber.prlimit64, name: "prlimit64") { [weak self] _, _, _, limitPtr, _, _, interp in
-            guard self != nil else { return Self.failure(SDRSyscallNumber.Errno.einval) }
+            guard let self = self else { return Self.failure(SDRSyscallNumber.Errno.einval) }
             guard limitPtr != 0 else { return 0 }
             var buf = [UInt8](repeating: 0, count: 16)
             Self.putLE64(&buf, 0, 1 << 40)      // RLIM_INFINITY 的量级近似
             Self.putLE64(&buf, 8, 1 << 40)
-            _ = self?.writeStruct(interp, limitPtr, buf)
+            _ = self.writeStruct(interp, limitPtr, buf)
             return 0
         }
         register(number: SDRSyscallNumber.rt_sigaction, name: "rt_sigaction") { _, _, _, _, _, _, _ in 0 }
