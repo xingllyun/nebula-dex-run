@@ -60,6 +60,8 @@ public final class SDRLoadedImage {
     func recordJNI(symbol: String, address: UInt64) { jniExports[symbol] = address }
     func recordDependencies(_ list: [String]) { dependencies = list }
     func recordDynamicSymbols(_ list: [SDRElfSymbol]) { dynamicSymbols = list }
+    /// 记录完整动态段解析结果：依赖装载完成后据此表补绑外部符号
+    func recordDynamic(_ info: SDRElfDynamicInfo) { dynamic = info }
     func markInitialized() { initialized = true }
 }
 
