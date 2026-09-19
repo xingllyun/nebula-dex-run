@@ -1098,8 +1098,8 @@ public final class SDRArmInterpreter {
 
     /// BRK #0x4E44：按 x16 中的符号索引取 host 实现，返回值写回 x0 后继续执行（PC 自动 +4 落到桩尾 ret）。
     /// 索引越界（未注册符号）按 -ENOSYS 回落，不改变解释器的停机/退出语义。
-    private func handleHostCall(_ insn: UInt32) throws -> SDRInterpreterState {
-        let index = SDRHostCall.trapIndex(insn)
+    private func handleHostCall(_ _: UInt32) throws -> SDRInterpreterState {
+        let index = SDRHostCall.trapIndex(context)
         if let value = try hostCall.dispatch(index: index, context: context,
                                              memory: memory, services: services) {
             context.x0 = value

@@ -172,13 +172,13 @@ public final class SDRHostCall {
 
     // MARK: 分派
 
-    /// 陷阱分派：索引越界返回 nil（调用方按未实现符号回落）。
+    /// 陷阱分派：索引取 x16（见 trapIndex），越界返回 nil（调用方按未实现符号回落 -ENOSYS）。
     public func dispatch(index: UInt64,
                          context: SDRCpuContext,
                          memory: SDRMemoryGuard,
                          services: SDRSystemServices) throws -> UInt64? {
         lock.lock()
-        let body: Body? = Int(index) < bodies.count ? bodies[Int(index)] : nil
+        let body: Body? = index < UInt64(bodies.count) ? bodies[Int(index)] : nil
         lock.unlock()
         guard let body else { return nil }
         let arguments = (0..<6).map { slot -> UInt64 in
@@ -214,8 +214,9 @@ public final class SDRHostCall {
         (instruction & 0xFFE0_001F) == 0xD420_0000 && ((instruction >> 5) & 0xFFFF) == trapImmediate
     }
 
-    /// 从陷阱指令取符号索引。
-    public static func trapIndex(_ instruction: UInt32) -> UInt64 {
-        UInt64((instruction >> 5) & 0xFFFF)
+    /// 从 CPU 状态取符号索引：桩中的 `movz x16,#index` 把索引写入 x16，
+    /// BRK 立即数只承载陷阱标识（自身不携带索引）。
+    public static func trapIndex(_ context: SDRCpuContext) -> UInt64 {
+        context.x.count > 16 ? context.x[16] : UInt64.max
     }
 }
