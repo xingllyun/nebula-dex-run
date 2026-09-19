@@ -65,13 +65,22 @@ public final class SDRZipArchive {
         guard eocd >= 0 else { throw SDRAppError(.apkBadZip, "未找到 ZIP 中央目录结束记录") }
 
         var r = SDRByteReader(Array(bytes[eocd...]))
-        r.skip(10)
-        guard let total = r.u16(), let cdOffset = r.u32() else {
+        r.skip(8)                                           // 签名 + 本盘号 + 目录起始盘号
+        guard let entriesThisDisk = r.u16(), let total = r.u16(),
+              let _ = r.u32(), let cdOffset32 = r.u32() else {
             throw SDRAppError(.apkBadZip, "EOCD 解析失败")
         }
 
-        var p = Int(cdOffset)
-        for _ in 0..<Int(total) {
+        // ZIP64 分流：出现哨兵值时改走 ZIP64 结束记录
+        var entryCount = Int(total)
+        var p = Int(cdOffset32)
+        if total == 0xFFFF || cdOffset32 == 0xFFFF_FFFF || entriesThisDisk == 0xFFFF,
+           let zip64 = zip64Directory(eocd: eocd) {
+            entryCount = zip64.count
+            p = zip64.offset
+        }
+
+        for _ in 0..<entryCount {
             guard p + 46 <= bytes.count,
                   bytes[p] == 0x50, bytes[p + 1] == 0x4b, bytes[p + 2] == 0x01, bytes[p + 3] == 0x02 else { break }
             var e = SDRByteReader(Array(bytes[(p + 4)...]))
@@ -80,19 +89,81 @@ public final class SDRZipArchive {
             guard let _ = e.u32(), let csize = e.u32(), let usize = e.u32() else { break }
             guard let nameLen = e.u16(), let extraLen = e.u16(), let commentLen = e.u16() else { break }
             e.skip(8)                                          // disk / attrs
-            guard let lho = e.u32() else { break }
-            guard let nameBytes = e.bytes(Int(nameLen)),
-                  let name = String(bytes: nameBytes, encoding: .utf8) else { break }
+            guard let lho = e.u32(), let nameBytes = e.bytes(Int(nameLen)) else { break }
+            let extraBytes = e.bytes(Int(extraLen)) ?? []
+
+            // ZIP64 扩展字段（0x0001）：哨兵值按“未压缩大小 / 压缩大小 / 本地头偏移”顺序回填
+            var resolvedUsize = UInt64(usize)
+            var resolvedCsize = UInt64(csize)
+            var resolvedLho = UInt64(lho)
+            if usize == 0xFFFF_FFFF || csize == 0xFFFF_FFFF || lho == 0xFFFF_FFFF {
+                let zip64Values = Self.zip64ExtraValues(extraBytes)
+                var index = 0
+                if usize == 0xFFFF_FFFF, index < zip64Values.count { resolvedUsize = zip64Values[index]; index += 1 }
+                if csize == 0xFFFF_FFFF, index < zip64Values.count { resolvedCsize = zip64Values[index]; index += 1 }
+                if lho == 0xFFFF_FFFF, index < zip64Values.count { resolvedLho = zip64Values[index] }
+            }
+
+            // 名称编码：UTF-8 优先，无 UTF-8 标志位时回退 Latin-1，避免整包误判为损坏
+            let name = String(bytes: nameBytes, encoding: .utf8)
+                ?? String(bytes: nameBytes, encoding: .isoLatin1)
+                ?? ""
+            guard !name.isEmpty else {
+                p += 46 + Int(nameLen) + Int(extraLen) + Int(commentLen)
+                continue
+            }
 
             entries.append(Entry(name: name,
-                                 compressedSize: Int(csize),
-                                 uncompressedSize: Int(usize),
+                                 compressedSize: Int(resolvedCsize),
+                                 uncompressedSize: Int(resolvedUsize),
                                  compressionMethod: method,
-                                 localHeaderOffset: Int(lho)))
+                                 localHeaderOffset: Int(resolvedLho)))
             p += 46 + Int(nameLen) + Int(extraLen) + Int(commentLen)
         }
 
         guard !entries.isEmpty else { throw SDRAppError(.apkBadZip, "ZIP 内无任何条目") }
+    }
+
+    /// ZIP64 结束记录定位：EOCD 前 20 字节为 locator（0x07064b50）
+    private func zip64Directory(eocd: Int) -> (offset: Int, count: Int)? {
+        let locator = eocd - 20
+        guard locator >= 0, locator + 20 <= bytes.count,
+              bytes[locator] == 0x50, bytes[locator + 1] == 0x4b,
+              bytes[locator + 2] == 0x06, bytes[locator + 3] == 0x07 else { return nil }
+        var l = SDRByteReader(Array(bytes[(locator + 4)...]))
+        guard let _ = l.u32(), let recordOffset = l.u64() else { return nil }
+        let base = Int(recordOffset)
+        guard base >= 0, base + 56 <= bytes.count,
+              bytes[base] == 0x50, bytes[base + 1] == 0x4b,
+              bytes[base + 2] == 0x06, bytes[base + 3] == 0x06 else { return nil }
+        var z = SDRByteReader(Array(bytes[(base + 4)...]))
+        guard let _ = z.u64(), let _ = z.u16(), let _ = z.u16(),
+              let _ = z.u32(), let _ = z.u32(),
+              let count = z.u64(), let _ = z.u64(), let cdOffset = z.u64() else { return nil }
+        return (Int(cdOffset), Int(count))
+    }
+
+    /// ZIP64 扩展字段（tag 0x0001）取值
+    static func zip64ExtraValues(_ extra: [UInt8]) -> [UInt64] {
+        var values: [UInt64] = []
+        var i = 0
+        while i + 4 <= extra.count {
+            let tag = UInt16(extra[i]) | (UInt16(extra[i + 1]) << 8)
+            let size = Int(UInt16(extra[i + 2]) | (UInt16(extra[i + 3]) << 8))
+            i += 4
+            guard i + size <= extra.count else { break }
+            if tag == 0x0001 {
+                var j = i
+                while j + 8 <= i + size {
+                    var v: UInt64 = 0
+                    for k in 0..<8 { v |= UInt64(extra[j + k]) << (8 * UInt64(k)) }
+                    values.append(v)
+                    j += 8
+                }
+            }
+            i += size
+        }
+        return values
     }
 
     public func contains(_ name: String) -> Bool { entries.contains { $0.name == name } }

@@ -89,6 +89,11 @@ public enum SDRVersionAdapter {
         return false
     }
 
+    /// 未做用户设置时的机型默认刷新率
+    public static var defaultRefreshRate: Int {
+        supportsProMotion ? 120 : 60
+    }
+
     /// 是否支持 ProMotion（120Hz）
     public static var supportsProMotion: Bool {
         UIScreen.main.maximumFramesPerSecond > 60

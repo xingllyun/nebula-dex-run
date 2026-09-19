@@ -44,32 +44,60 @@ public enum SDRRelocType: UInt32 {
 /// 静态重定位器：不调用 dyld，全部在软件镜像内完成
 public enum SDRRelocator {
 
-    public static func apply(image: SDRLoadedImage, originalBytes: [UInt8]) throws {
-        // 第 1 步：修正相对重定位（R_*_RELATIVE）
-        // 第 2 步：外部符号重定位交由 syscall 代理层在首次调用时惰性解析
-        var patched = 0
-        let memory = image.memory
-
-        for ph in image.header.programHeaders where ph.isLoad && ph.writable {
-            let vaddr = image.loadBase + ph.vaddr
-            guard let region = try? memory.read(vaddr, count: Int(ph.memsz)) else { continue }
-            var mutable = region
-            let stride = (image.header.is64Bit ? 8 : 4)
-            var idx = 0
-            while idx + stride <= mutable.count {
-                let slot = vaddr + UInt64(idx)
-                if let value = readPointer(mutable, at: idx, is64: image.header.is64Bit),
-                   value == 0 {
-                    // 占位：写入自身地址，避免空指针崩溃
-                    writePointer(&mutable, at: idx, value: slot, is64: image.header.is64Bit)
-                    patched += 1
-                }
-                idx += stride
-            }
-            try memory.write(vaddr, bytes: mutable)
+    /// 按动态重定位表逐项落地：只改表里明确列出的槽位，不触碰其它数据
+    public static func apply(image: SDRLoadedImage, dynamic: SDRElfDynamicInfo) throws {
+        guard !dynamic.relocations.isEmpty else {
+            SDRLogger.d("reloc", "无动态重定位表，跳过：\(image.path)")
+            return
         }
 
-        SDRLogger.d("reloc", "重定位占位修正 \(patched) 处：\(image.path)")
+        let base = image.loadBase
+        let pointerSize = image.header.pointerSize
+        var applied = 0
+        var deferred = 0
+        var skipped = 0
+
+        for rel in dynamic.relocations {
+            let target = base &+ rel.offset
+            let symbol = Int(rel.symbolIndex) < dynamic.symbols.count
+                ? dynamic.symbols[Int(rel.symbolIndex)]
+                : nil
+            var newValue: UInt64?
+
+            switch rel.type {
+            case SDRRelocType.aarch64Relative.rawValue, SDRRelocType.armRelative.rawValue:
+                newValue = base &+ UInt64(bitPattern: rel.addend)
+
+            case SDRRelocType.aarch64Abs64.rawValue, SDRRelocType.armAbs32.rawValue:
+                if let sym = symbol, !sym.isUndefined {
+                    newValue = base &+ sym.value &+ UInt64(bitPattern: rel.addend)
+                } else {
+                    deferred += 1
+                }
+
+            case SDRRelocType.aarch64GlobDat.rawValue, SDRRelocType.aarch64JumpSlot.rawValue,
+                 SDRRelocType.armGlobDat.rawValue, SDRRelocType.armJumpSlot.rawValue:
+                if let sym = symbol, !sym.isUndefined, sym.value != 0 {
+                    newValue = base &+ sym.value
+                } else {
+                    // 外部符号：保留原值交调用期惰性解析，绝不写入伪地址
+                    deferred += 1
+                }
+
+            default:
+                skipped += 1
+            }
+
+            guard let value = newValue else { continue }
+            do {
+                try image.memory.writeScalar(target, value: value, count: pointerSize)
+                applied += 1
+            } catch {
+                skipped += 1
+            }
+        }
+
+        SDRLogger.d("reloc", "动态重定位生效 \(applied) 项（跳过 \(skipped)，外部符号待解析 \(deferred)）：\(image.path)")
     }
 
     public static func resolveLazy(image: SDRLoadedImage, symbol: String) -> UInt64? {

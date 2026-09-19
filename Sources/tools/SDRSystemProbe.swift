@@ -32,7 +32,7 @@ import Darwin
 import os
 
 /// 侧载证书相关权限的探测结论
-public enum SDRCapabilityStatus: String {
+public enum SDRCapabilityStatus: String, Codable {
     case active
     case inactive
     case unknown
@@ -50,7 +50,7 @@ public enum SDRCapabilityStatus: String {
 }
 
 /// 设备运行时能力报告（iOS 26 机型适配的基座数据）
-public struct SDRDeviceCapabilityReport {
+public struct SDRDeviceCapabilityReport: Codable, Equatable {
     public var systemVersion: String
     public var machineIdentifier: String
     public var physicalMemoryBytes: UInt64

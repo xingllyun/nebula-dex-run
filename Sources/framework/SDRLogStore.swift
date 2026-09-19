@@ -43,12 +43,20 @@ public enum SDRLogLevel: Int, Codable, CaseIterable {
     }
 }
 
-public struct SDRLogEntry: Identifiable, Codable {
-    public let id = UUID()
+public struct SDRLogEntry: Identifiable, Codable, Equatable {
+    public let id: UUID
     public let date: Date
     public let level: SDRLogLevel
     public let module: String
     public let text: String
+
+    public init(id: UUID = UUID(), date: Date = Date(), level: SDRLogLevel, module: String, text: String) {
+        self.id = id
+        self.date = date
+        self.level = level
+        self.module = module
+        self.text = text
+    }
 }
 
 /// 实时日志：内存环形缓冲 + 可选文件落盘

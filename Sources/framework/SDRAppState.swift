@@ -37,10 +37,18 @@ public final class SDRAppState: ObservableObject {
     @Published public var apps: [SDRAppInfo] = []
     @Published public var runState: SDRRunState = .idle
     @Published public var currentApp: SDRAppInfo?
-    @Published public var refreshRate: Int = 60
-    @Published public var lowPowerDowngrade: Bool = false
+    @Published public var refreshRate: Int {
+        didSet { SDRSettingsStore.shared.persistRefreshRate(refreshRate) }
+    }
+    @Published public var lowPowerDowngrade: Bool {
+        didSet { SDRSettingsStore.shared.lowPowerDowngrade = lowPowerDowngrade }
+    }
 
-    private init() {}
+    private init() {
+        let settings = SDRSettingsStore.shared
+        refreshRate = settings.refreshRate
+        lowPowerDowngrade = settings.lowPowerDowngrade
+    }
 
     public func reloadApps() {
         apps = SDRSandbox.shared.scanInstalledApps()

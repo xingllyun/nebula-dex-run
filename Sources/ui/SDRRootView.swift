@@ -66,6 +66,9 @@ public struct SDRSettingsView: View {
                             Text("\(rate) Hz").tag(rate)
                         }
                     }
+                    .onChange(of: state.refreshRate) { _ in
+                        SDRSettingsStore.shared.markRefreshRateExplicit()
+                    }
                     Toggle("低电量降级", isOn: $state.lowPowerDowngrade)
                 }
 

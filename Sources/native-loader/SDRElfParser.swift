@@ -98,8 +98,8 @@ public enum SDRElfParser {
                 throw SDRAppError(.soElfBadMagic, "ELF64 头解析失败")
             }
             entry = e; phoff = ph
-            r.skip(6)
-            guard let pes = r.u16(), let pn = r.u16() else {
+            r.skip(2)                                           // e_ehsize
+            guard let pes = r.u16(), let pn = r.u16() else {    // e_phentsize @0x36 / e_phnum @0x38
                 throw SDRAppError(.soElfBadMagic, "ELF64 程序头参数缺失")
             }
             phentsize = pes; phnum = pn
@@ -108,8 +108,8 @@ public enum SDRElfParser {
                 throw SDRAppError(.soElfBadMagic, "ELF32 头解析失败")
             }
             entry = UInt64(e); phoff = UInt64(ph)
-            r.skip(6)
-            guard let pes = r.u16(), let pn = r.u16() else {
+            r.skip(2)                                           // e_ehsize
+            guard let pes = r.u16(), let pn = r.u16() else {    // e_phentsize @0x2A / e_phnum @0x2C
                 throw SDRAppError(.soElfBadMagic, "ELF32 程序头参数缺失")
             }
             phentsize = pes; phnum = pn

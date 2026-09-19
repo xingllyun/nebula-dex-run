@@ -40,6 +40,10 @@ public final class SDRLoadedImage {
 
     public private(set) var jniExports: [String: UInt64] = [:]
     public private(set) var initialized = false
+    /// DT_NEEDED 声明的依赖库（供后续依赖树加载使用）
+    public private(set) var dependencies: [String] = []
+    /// .dynsym 解析出的动态符号
+    public private(set) var dynamicSymbols: [SDRElfSymbol] = []
 
     init(path: String, header: SDRElfHeader, memory: SDRMemoryGuard,
          loadBase: UInt64, textRange: Range<UInt64>, dataRange: Range<UInt64>) {
@@ -52,6 +56,8 @@ public final class SDRLoadedImage {
     }
 
     func recordJNI(symbol: String, address: UInt64) { jniExports[symbol] = address }
+    func recordDependencies(_ list: [String]) { dependencies = list }
+    func recordDynamicSymbols(_ list: [SDRElfSymbol]) { dynamicSymbols = list }
     func markInitialized() { initialized = true }
 }
 
@@ -102,18 +108,31 @@ public final class SDRImageLoader {
                                    textRange: (textLo == UInt64.max ? 0..<0 : textLo..<textHi),
                                    dataRange: (dataLo == UInt64.max ? 0..<0 : dataLo..<dataHi))
 
-        try SDRRelocator.apply(image: image, originalBytes: bytes)
-        registerJNISymbols(image: image)
+        let dynamicInfo = SDRElfDynamic.parse(bytes, header: header)
+        try SDRRelocator.apply(image: image, dynamic: dynamicInfo)
+        registerJNISymbols(image: image, dynamic: dynamicInfo)
+        image.recordDependencies(dynamicInfo.needed)
+        image.recordDynamicSymbols(dynamicInfo.symbols)
         image.markInitialized()
 
-        SDRLogger.i("native", "SO 镜像装载完成：\(path) abi=\(header.abiName)")
+        SDRLogger.i("native", "SO 镜像装载完成：\(path) abi=\(header.abiName) 符号 \(dynamicInfo.symbols.count) 重定位 \(dynamicInfo.relocations.count) 依赖 \(dynamicInfo.needed.count)")
         return image
     }
 
-    /// 从 .dynsym 提取 JNI 导出（Java_* 与 JNI_OnLoad）
-    private func registerJNISymbols(image: SDRLoadedImage) {
-        // TODO: 完整解析 .dynsym/.dynstr 后按符号值登记；当前以入口占位
-        image.recordJNI(symbol: "JNI_OnLoad", address: image.loadBase + image.header.entry)
-        SDRLogger.d("native", "JNI 导出登记：JNI_OnLoad")
+    /// 从 .dynsym 提取 JNI 导出（Java_* 与 JNI_OnLoad）：只登记真实定义过的符号
+    private func registerJNISymbols(image: SDRLoadedImage, dynamic: SDRElfDynamicInfo) {
+        var registered = 0
+        for symbol in dynamic.symbols where !symbol.isUndefined && symbol.value != 0 {
+            guard symbol.name == "JNI_OnLoad"
+                || symbol.name == "JNI_OnUnload"
+                || symbol.name.hasPrefix("Java_") else { continue }
+            image.recordJNI(symbol: symbol.name, address: image.loadBase + symbol.value)
+            registered += 1
+        }
+        if registered == 0 {
+            SDRLogger.w("native", "未在 .dynsym 找到 JNI 导出（符号表 \(dynamic.symbols.count) 项）：\(image.path)")
+        } else {
+            SDRLogger.d("native", "JNI 导出登记 \(registered) 项：\(image.path)")
+        }
     }
 }

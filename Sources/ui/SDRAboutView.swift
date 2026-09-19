@@ -36,7 +36,9 @@ public struct SDRAboutView: View {
     @State private var pressureLevel: String = SDRMemoryPressureMonitor.shared.level.rawValue
 
     public init() {
-        let probed = SDRSystemProbe.report(performAddressProbe: false)
+        // 优先用上次落盘的探测快照，避免每次进入都显示“无法判定 / 未探测”
+        let probed = SDRSettingsStore.shared.loadProbeReport()
+            ?? SDRSystemProbe.report(performAddressProbe: false)
         _report = State(initialValue: probed)
         _plan = State(initialValue: SDRMemoryBudget.makePlan(report: probed))
     }
@@ -61,6 +63,7 @@ public struct SDRAboutView: View {
                 }
 
                 Section("侧载证书权限（两项）") {
+                    LabeledContent("上次探测", value: report.probedAt.formatted(date: .numeric, time: .shortened))
                     LabeledContent("大内存", value: report.increasedMemoryLimit.displayName)
                     LabeledContent("大地址空间", value: report.extendedVirtualAddressing.displayName)
                     LabeledContent("最大连续映射", value: report.maxContiguousMapDescription)
@@ -95,6 +98,7 @@ public struct SDRAboutView: View {
             .onAppear {
                 SDRMemoryPressureMonitor.shared.start()
                 pressureLevel = SDRMemoryPressureMonitor.shared.level.rawValue
+                autoProbeIfStale()
             }
         }
     }
@@ -114,9 +118,26 @@ public struct SDRAboutView: View {
 
     private func refresh() {
         let probed = SDRSystemProbe.report(performAddressProbe: true)
+        SDRSettingsStore.shared.saveProbeReport(probed)
         report = probed
         plan = SDRMemoryBudget.refresh()
         pressureLevel = SDRMemoryPressureMonitor.shared.level.rawValue
+    }
+
+    /// 快照缺失或超过 6 小时时后台自动补探一次（含地址空间探测），结果落盘，无需用户手动点
+    private func autoProbeIfStale() {
+        if let cached = SDRSettingsStore.shared.loadProbeReport(),
+           Date().timeIntervalSince(cached.probedAt) < 6 * 3600 {
+            return
+        }
+        DispatchQueue.global(qos: .utility).async {
+            let probed = SDRSystemProbe.report(performAddressProbe: true)
+            SDRSettingsStore.shared.saveProbeReport(probed)
+            DispatchQueue.main.async {
+                self.report = probed
+                self.plan = SDRMemoryBudget.makePlan(report: probed)
+            }
+        }
     }
 }
 

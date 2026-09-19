@@ -95,7 +95,11 @@ public final class SDRAppContainer {
 
     public func launch(_ info: SDRAppInfo) {
         state.setState(.loading(step: "装载镜像", progress: 0.2))
-        defer { SDRAppState.shared.refreshRate = SDRVersionAdapter.supportsProMotion ? 120 : 60 }
+        // 刷新率：用户在设置页显式选过就沿用，未设置过才按机型默认（不再每次启动强制覆盖）
+        let settings = SDRSettingsStore.shared
+        SDRAppState.shared.refreshRate = settings.hasExplicitRefreshRate
+            ? settings.refreshRate
+            : SDRVersionAdapter.defaultRefreshRate
 
         // iOS 26 机型适配：先探测侧载证书的两项内存权限，按实测能力确定本次运行的预算
         SDRMemoryPressureMonitor.shared.start()
