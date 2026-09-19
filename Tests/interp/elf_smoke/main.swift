@@ -179,10 +179,6 @@ do {
     check(dynamic.relocations.count == 4, "重定位条目共 4 项（实得 \(dynamic.relocations.count)）")
     check(dynamic.relocations.filter { $0.isPlt }.count == 1, "其中 1 项来自 .rela.plt")
 
-    for rel in dynamic.relocations {
-        print("DIAG reloc offset=\(hex(rel.offset)) type=\(rel.type) sym=\(rel.symbolIndex) plt=\(rel.isPlt)")
-    }
-
     // MARK: - 3. 装载 + 重定位 + JNI 登记
 
     let image = try SDRImageLoader().load(bytes: fixture, path: "synthetic-aarch64.so", preferredABI: "arm64-v8a")
@@ -212,17 +208,20 @@ do {
     check(slotPlt == base + 0x120,
           "JUMP_SLOT 落地为 loadBase+0x120（实得 \(hex(slotPlt))）")
 
-    // 诊断：区分“段权限被误收”与“重定位未执行”
-    let seg0 = image.memory.segment(for: base)
-    let seg1 = image.memory.segment(for: base + 0x1000)
-    print("DIAG seg0 r=\(seg0?.readable ?? false) w=\(seg0?.writable ?? false) size=\(seg0?.size ?? 0)")
-    print("DIAG seg1 r=\(seg1?.readable ?? false) w=\(seg1?.writable ?? false) size=\(seg1?.size ?? 0)")
+    // 段权限双向回归：可写段放行、只读段拒绝（临时 DIAG 输出已固化为断言）
     do {
         try image.memory.writeScalar(base + 0x1028, value: 0xAABBCCDD, count: 8)
         let echo = try image.memory.readScalar(base + 0x1028, count: 8)
-        print("DIAG 手动写 base+0x1028 成功，读回 \(hex(echo))")
+        check(echo == 0xAABBCCDD, "可写段写入可原值读回（实得 \(hex(echo))）")
     } catch {
-        print("DIAG 手动写 base+0x1028 失败：\(error)")
+        check(false, "可写段写入被误拒：\(error)")
+    }
+
+    do {
+        try image.memory.writeScalar(base, value: 0x1, count: 8)
+        check(false, "只读段写入应被沙盒拒绝，却写入成功")
+    } catch {
+        check(true, "只读段写入被沙盒拒绝（回归）")
     }
 
     check(image.jniExports["JNI_OnLoad"] == base + 0x120,

@@ -43,6 +43,8 @@ jobs:
                  Sources/native-loader/SDRElfDynamic.swift \
                  Sources/native-loader/SDRImageLoader.swift \
                  Sources/native-loader/SDRRelocator.swift \
+                 Sources/native-loader/SDRSharedLibrary.swift \
+                 Sources/apk-tool/SDRZipArchive.swift \
                  Sources/sandbox/SDRAddressSpaceAllocator.swift \
                  Sources/sandbox/SDRMemoryBudget.swift \
                  Sources/sandbox/SDRMemoryGuard.swift \
@@ -57,6 +59,7 @@ jobs:
                  Sources/framework/SDREventBus.swift \
                  Sources/framework/SDRLicense.swift \
                  Sources/framework/SDRLogStore.swift \
+                 Sources/framework/SDRSettingsStore.swift \
                  Sources/ios-adapter/SDRFileDescriptorTable.swift \
                  Sources/ios-adapter/SDRSyscallNumber.swift \
                  Sources/ios-adapter/SDRSystemServices.swift"
@@ -65,6 +68,10 @@ jobs:
           swiftc -swift-version 5 -O -o syscall-smoke $FILES Tests/interp/syscall_smoke/main.swift
           swiftc -swift-version 5 -O -o libc-smoke $FILES Tests/interp/libc_smoke/main.swift
           swiftc -swift-version 5 -O -o elf-smoke $FILES Tests/interp/elf_smoke/main.swift
+          swiftc -swift-version 5 -O -o dl-smoke $FILES Tests/interp/dl_smoke/main.swift
+          swiftc -swift-version 5 -O -o zip-smoke $FILES Tests/interp/zip_smoke/main.swift
+          swiftc -swift-version 5 -O -o settings-smoke $FILES Tests/interp/settings_smoke/main.swift
+          swiftc -swift-version 5 -O -o host-smoke $FILES Tests/interp/host_smoke/main.swift
 
       - name: Run acceptance vectors (baseline)
         run: |
@@ -100,6 +107,26 @@ jobs:
         run: |
           set -euo pipefail
           ./elf-smoke
+
+      - name: Run dynamic dependency smoke (stage 2)
+        run: |
+          set -euo pipefail
+          ./dl-smoke
+
+      - name: Run ZIP archive smoke
+        run: |
+          set -euo pipefail
+          ./zip-smoke
+
+      - name: Run settings persistence smoke
+        run: |
+          set -euo pipefail
+          ./settings-smoke
+
+      - name: Run host stub binding smoke (stage 2)
+        run: |
+          set -euo pipefail
+          ./host-smoke
 
       - name: Throughput benchmark (informational)
         run: |

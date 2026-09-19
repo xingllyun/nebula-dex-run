@@ -44,6 +44,8 @@ public final class SDRLoadedImage {
     public private(set) var dependencies: [String] = []
     /// .dynsym 解析出的动态符号
     public private(set) var dynamicSymbols: [SDRElfSymbol] = []
+    /// 完整动态段解析结果：依赖装载完成后按此表补绑外部符号
+    public private(set) var dynamic: SDRElfDynamicInfo?
 
     init(path: String, header: SDRElfHeader, memory: SDRMemoryGuard,
          loadBase: UInt64, textRange: Range<UInt64>, dataRange: Range<UInt64>) {
@@ -66,7 +68,24 @@ public final class SDRImageLoader {
 
     public init() {}
 
-    public func load(bytes: [UInt8], path: String, preferredABI: String?) throws -> SDRLoadedImage {
+    // MARK: - 装载基址分配
+
+    /// 多库共用一个基址会互相踩踏（后装库覆盖先装库的段），故按固定步长递增分配。
+    /// 步长 4 GiB，远大于单库镜像尺寸，保证相邻镜像的段区间不重叠。
+    private static let baseLock = NSLock()
+    private static var nextBase: UInt64 = 0x1_0000_0000
+    private static let baseStride: UInt64 = 0x1_0000_0000
+
+    static func allocateLoadBase() -> UInt64 {
+        baseLock.lock()
+        defer { baseLock.unlock() }
+        let base = nextBase
+        nextBase &+= baseStride
+        return base
+    }
+
+    public func load(bytes: [UInt8], path: String, preferredABI: String?,
+                     symbolTable: SDRSharedLibraryTable? = nil) throws -> SDRLoadedImage {
         let header = try SDRElfParser.parse(bytes)
 
         if let want = preferredABI, !want.isEmpty, header.abiName != want {
@@ -74,7 +93,7 @@ public final class SDRImageLoader {
         }
 
         let memory = SDRMemoryGuard()
-        let base: UInt64 = 0x1_0000_0000
+        let base = SDRImageLoader.allocateLoadBase()
         var textLo = UInt64.max
         var textHi: UInt64 = 0
         var dataLo = UInt64.max
@@ -106,9 +125,11 @@ public final class SDRImageLoader {
             memory.protect(address: vaddr, size: ph.memsz,
                            readable: true, writable: ph.writable, executable: false)
 
+            // 段范围统计：可执行段与可写段各自独立判定，避免 RWX 段被 else 分支漏计
             if ph.executable {
                 textLo = min(textLo, vaddr); textHi = max(textHi, vaddr + ph.memsz)
-            } else if ph.writable {
+            }
+            if ph.writable {
                 dataLo = min(dataLo, vaddr); dataHi = max(dataHi, vaddr + ph.memsz)
             }
         }
@@ -118,8 +139,9 @@ public final class SDRImageLoader {
                                    dataRange: (dataLo == UInt64.max ? 0..<0 : dataLo..<dataHi))
 
         let dynamicInfo = SDRElfDynamic.parse(bytes, header: header)
-        try SDRRelocator.apply(image: image, dynamic: dynamicInfo)
+        try SDRRelocator.apply(image: image, dynamic: dynamicInfo, table: symbolTable)
         registerJNISymbols(image: image, dynamic: dynamicInfo)
+        image.recordDynamic(dynamicInfo)
         image.recordDependencies(dynamicInfo.needed)
         image.recordDynamicSymbols(dynamicInfo.symbols)
         image.markInitialized()

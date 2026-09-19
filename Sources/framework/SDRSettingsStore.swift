@@ -30,10 +30,21 @@ public final class SDRSettingsStore {
 
     // MARK: - 运行设置
 
+    /// 平台缺省刷新率：UIKit 适配器不可用（命令行/CI 冒烟）时返回 60。
+    /// 该持久化层不得反向硬依赖 UIKit，否则无法进入 CI 编译清单，
+    /// “退出后台丢设置”的修复将永远拿不到回归保护。
+    private static var platformDefaultRefreshRate: Int {
+        #if canImport(UIKit)
+        return SDRVersionAdapter.defaultRefreshRate
+        #else
+        return 60
+        #endif
+    }
+
     /// 刷新率：未设置过时返回机型默认值
     public var refreshRate: Int {
         let stored = defaults.integer(forKey: Key.refreshRate)
-        return stored > 0 ? stored : SDRVersionAdapter.defaultRefreshRate
+        return stored > 0 ? stored : Self.platformDefaultRefreshRate
     }
 
     /// 仅落盘数值，不标记“用户显式设置”（供程序按默认档写入）

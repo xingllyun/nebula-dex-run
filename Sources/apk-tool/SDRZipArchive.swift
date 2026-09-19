@@ -49,6 +49,12 @@ public final class SDRZipArchive {
         try readCentralDirectory()
     }
 
+    /// 内存字节构造：APK/构件已在内存中（导入校验、CI 冒烟）时避免二次落盘
+    public init(bytes: [UInt8]) throws {
+        self.bytes = bytes
+        try readCentralDirectory()
+    }
+
     private func readCentralDirectory() throws {
         guard bytes.count > 22 else { throw SDRAppError(.apkBadZip, "文件过小，不是合法 ZIP") }
 
@@ -57,7 +63,8 @@ public final class SDRZipArchive {
         let lower = max(0, bytes.count - 65557)
         var i = bytes.count - 22
         while i >= lower {
-            if bytes[i] == 0x50, bytes[i + 1] == 0x4b, bytes[i + 2] == 0x05, bytes[i + 3] == 0x06 {
+            if bytes[i] == 0x50, bytes[i + 1] == 0x4b, bytes[i + 2] == 0x05, bytes[i + 3] == 0x06,
+               i + 22 <= bytes.count {
                 eocd = i; break
             }
             i -= 1
@@ -84,11 +91,12 @@ public final class SDRZipArchive {
             guard p + 46 <= bytes.count,
                   bytes[p] == 0x50, bytes[p + 1] == 0x4b, bytes[p + 2] == 0x01, bytes[p + 3] == 0x02 else { break }
             var e = SDRByteReader(Array(bytes[(p + 4)...]))
-            guard let method = e.u16(), let _ = e.u16(), let _ = e.u16() else { break }
-            e.skip(4)                                          // time + date
-            guard let _ = e.u32(), let csize = e.u32(), let usize = e.u32() else { break }
+            e.skip(4)                                          // version made by + version needed
+            guard let _ = e.u16(), let method = e.u16() else { break }   // flags + method
+            e.skip(8)                                          // time(2) + date(2) + crc32(4)
+            guard let csize = e.u32(), let usize = e.u32() else { break }
             guard let nameLen = e.u16(), let extraLen = e.u16(), let commentLen = e.u16() else { break }
-            e.skip(8)                                          // disk / attrs
+            e.skip(8)                                          // disk + internal attrs + external attrs
             guard let lho = e.u32(), let nameBytes = e.bytes(Int(nameLen)) else { break }
             let extraBytes = e.bytes(Int(extraLen)) ?? []
 
@@ -139,7 +147,11 @@ public final class SDRZipArchive {
         var z = SDRByteReader(Array(bytes[(base + 4)...]))
         guard let _ = z.u64(), let _ = z.u16(), let _ = z.u16(),
               let _ = z.u32(), let _ = z.u32(),
-              let count = z.u64(), let _ = z.u64(), let cdOffset = z.u64() else { return nil }
+              let _ = z.u64(),          // 本盘条目数
+              let count = z.u64(),      // 总条目数
+              let _ = z.u64(),          // 中央目录大小
+              let cdOffset = z.u64()    // 中央目录偏移
+        else { return nil }
         return (Int(cdOffset), Int(count))
     }
 
@@ -173,18 +185,17 @@ public final class SDRZipArchive {
     public func extract(_ name: String) throws -> [UInt8] {
         guard let e = entry(name) else { throw SDRAppError(.apkBadZip, "条目不存在：\(name)") }
 
-        var r = SDRByteReader(Array(bytes[e.localHeaderOffset...]))
-        guard let _ = r.u32(), let _ = r.u16(), let _ = r.u16() else {
+        // 本地文件头字段按固定偏移直读：sig(4) + version(2) + flags(2) + method(2)
+        // + time(2) + date(2) + crc(4) + csize(4) + usize(4) + nameLen(2) + extraLen(2) + name
+        let h = e.localHeaderOffset
+        guard h + 30 <= bytes.count,
+              bytes[h] == 0x50, bytes[h + 1] == 0x4b,
+              bytes[h + 2] == 0x03, bytes[h + 3] == 0x04 else {
             throw SDRAppError(.apkBadZip, "本地文件头损坏：\(name)")
         }
-        r.skip(4)                                              // time + date
-        guard let _ = r.u32(), let _ = r.u32(), let _ = r.u32() else {
-            throw SDRAppError(.apkBadZip, "本地文件头损坏：\(name)")
-        }
-        guard let nameLen = r.u16(), let extraLen = r.u16() else {
-            throw SDRAppError(.apkBadZip, "本地文件头损坏：\(name)")
-        }
-        let dataStart = e.localHeaderOffset + 30 + Int(nameLen) + Int(extraLen)
+        let nameLen = Int(bytes[h + 26]) | (Int(bytes[h + 27]) << 8)
+        let extraLen = Int(bytes[h + 28]) | (Int(bytes[h + 29]) << 8)
+        let dataStart = h + 30 + nameLen + extraLen
         guard dataStart + e.compressedSize <= bytes.count else {
             throw SDRAppError(.apkBadZip, "条目数据越界：\(name)")
         }
