@@ -85,6 +85,9 @@
 分解：内存模型修复贡献约 +72.9%，解释器侧（译码缓存/内联/取指窗口 + 标量读路径）再贡献约 +26.5%。
 回归确认：四套向量在优化构建与优化前构建下均全绿，优化未改变语义。
 
+> 注：CI runner（`macos-26`）上同一基准的实测值为 9.89 MIPS。绝对吞吐受 runner 硬件与虚拟化影响，
+> 横向比较请以同一台机器上的相对值（上表三行）为准。
+
 ## 5. 复现方式
 
 CI（`.github/workflows/interp-test.yml`，`macos-26`）在每次推送到 `main` 时执行：
@@ -110,6 +113,7 @@ python3 Tests/interp/gen_vectors_hardening.py
 python3 Tests/interp/gen_vectors_neon.py
 python3 Tests/interp/gen_vectors_neon2.py
 python3 Tests/interp/gen_bench.py
+python3 Tests/interp/gen_bench_variants.py   # 第 4.1 节热点定位所用的三个负载变体
 ```
 
 ## 6. 遗留与后续

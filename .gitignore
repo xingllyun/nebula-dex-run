@@ -22,3 +22,7 @@ build/
 # 中间产物
 *.tmp
 *.log
+
+# Python
+__pycache__/
+*.pyc

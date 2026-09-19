@@ -1,0 +1,12 @@
+{
+ "comment": "bench variant full",
+ "code_base": "0x10000000",
+ "code_size": 65536,
+ "stack_base": "0x20000000",
+ "stack_size": 65536,
+ "sp_init": "0x20008000",
+ "code_hex": "e90300aa21040091420c0091230002ca64f47ed38500028aa60001aaa384a74ea41c266ee6031ff8e7035ff8290500d1a9feffb5000020d4",
+ "iterations": 500000,
+ "instructions_per_iteration": 12,
+ "budget": 6000064
+}
