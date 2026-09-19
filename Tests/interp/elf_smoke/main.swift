@@ -99,7 +99,8 @@ func makeSyntheticSO() -> [UInt8] {
     }
 
     // .rela.dyn：RELATIVE + GLOB_DAT(未定义) + GLOB_DAT(已定义)
-    let relaDyn: [(UInt64, UInt32, UInt64, Int64)] = [
+    // r_info 按 AArch64 ELF 规范编码：高 32 位为符号索引，低 32 位为类型
+    let relaDyn: [(UInt64, UInt32, UInt32, Int64)] = [
         (0x1000, 0, 1027, 0x1234),       // R_AARCH64_RELATIVE
         (0x1010, 3, 1025, 0),            // GLOB_DAT ← 未定义符号
         (0x1018, 2, 1025, 0)             // GLOB_DAT ← 已定义符号
@@ -107,7 +108,7 @@ func makeSyntheticSO() -> [UInt8] {
     for (index, item) in relaDyn.enumerated() {
         let base = 0x1C0 + index * 24
         writeU64(base + 0, item.0)
-        writeU64(base + 8, (item.2 << 32) | UInt64(item.1))
+        writeU64(base + 8, (UInt64(item.1) << 32) | UInt64(item.2))
         writeU64(base + 16, UInt64(bitPattern: item.3))
     }
 
