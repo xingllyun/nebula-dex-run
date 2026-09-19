@@ -98,6 +98,11 @@ jobs:
           set -euo pipefail
           ./interp-test Tests/interp/vectors_neon2.json
 
+      - name: Run NEON float / reduce / by-element vectors
+        run: |
+          set -euo pipefail
+          ./interp-test Tests/interp/vectors_neon3.json
+
       - name: Run syscall proxy smoke (stage 2)
         run: |
           set -euo pipefail

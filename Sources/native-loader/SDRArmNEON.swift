@@ -63,8 +63,14 @@ enum SDRArmNEON {
     static func execute(insn: UInt32, context: SDRCpuContext, fpu: SDRArmFPU) -> Bool {
         let top = (insn >> 24) & 0x1F
         if top == 0b01111 {
-            guard (insn >> 10) & 1 == 1 else { return false }   // bit10 = 0 为按元素，暂未覆盖
-            return executeShiftImmediate(insn: insn, fpu: fpu)
+            // bit10 = 1 → 移位立即数；bit10 = 0 → 按元素（by element）
+            return (insn >> 10) & 1 == 1
+                ? executeShiftImmediate(insn: insn, fpu: fpu)
+                : executeByElement(insn: insn, fpu: fpu)
+        }
+        // 标量 pairwise 族（FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP 的 2S / 2D 形式）
+        if top == 0b11110 {
+            return executeScalarPairwise(insn: insn, fpu: fpu)
         }
         guard top == 0b01110 else { return false }
 
@@ -74,6 +80,10 @@ enum SDRArmNEON {
 
         if b21 == 1, b10 == 1 {
             return executeThreeSame(insn: insn, fpu: fpu)
+        }
+        // 跨通道归约（across lanes）：bits[20] = 1 区分于二同 misc
+        if b21 == 1, b10 == 0, (insn >> 20) & 1 == 1 {
+            return executeAcrossLanes(insn: insn, fpu: fpu)
         }
         // 二同 misc 固定形如 size:10000：bits[20:17] = 0000，bit11 = 1，bit10 = 0
         if b21 == 1, ((insn >> 17) & 0xF) == 0, b11 == 1, b10 == 0 {
@@ -141,6 +151,11 @@ enum SDRArmNEON {
         let op = Int((insn >> 11) & 0x1F)
         let rn = Int((insn >> 5) & 0x1F)
         let rd = Int(insn & 0x1F)
+
+        // op ≥ 0b11000 属浮点三同族（整数三同 opcode 上界为 0b10111）
+        if op >= 0b11000 {
+            return executeThreeSameFP(insn: insn, fpu: fpu)
+        }
 
         let esize = 8 << size
         let lanes = (q ? 128 : 64) / esize
@@ -616,6 +631,346 @@ enum SDRArmNEON {
         default:
             return false
         }
+    }
+
+    // MARK: - 浮点工具
+
+    /// 读取第 index 个浮点元素（sz = false → 单精度，true → 双精度）。
+    @inline(__always)
+    static func fpGet(_ src: (UInt64, UInt64), _ index: Int, sz: Bool) -> Double {
+        if sz { return Double(bitPattern: laneGet(src, index, 64)) }
+        return Double(Float(bitPattern: UInt32(truncatingIfNeeded: laneGet(src, index, 32))))
+    }
+
+    /// 写入第 index 个浮点元素（按 sz 截断到对应位宽）。
+    @inline(__always)
+    static func fpSet(_ dst: inout (UInt64, UInt64), _ index: Int, sz: Bool, _ value: Double) {
+        if sz {
+            laneSet(&dst, index, 64, value.bitPattern)
+        } else {
+            laneSet(&dst, index, 32, UInt64(Float(value).bitPattern))
+        }
+    }
+
+    /// 比较类结果的全 1 掩码。
+    @inline(__always)
+    static func fpMask(_ sz: Bool) -> UInt64 { sz ? ~0 : 0xFFFF_FFFF }
+
+    /// 默认 NaN（FMAX/FMIN 双侧 NaN 语义）。
+    @inline(__always)
+    static func fpDefaultNaN(_ sz: Bool) -> Double {
+        sz ? Double(bitPattern: UInt64(0x7FF8_0000_0000_0000))
+           : Double(Float(bitPattern: 0x7FC0_0000))
+    }
+
+    /// FMAX/FMIN/FMAXP/FMINP/FMAXV/FMINV 共用的 NaN 传播语义：
+    /// 任一侧为 NaN 即原样传播该 NaN（可由 Double(Float) 转换自动完成 quiet 化）。
+    @inline(__always)
+    static func fpPropagate(_ a: Double, _ b: Double, max wantMax: Bool) -> Double {
+        if a.isNaN { return a }
+        if b.isNaN { return b }
+        return wantMax ? Swift.max(a, b) : Swift.min(a, b)
+    }
+
+    /// FMAXNM/FMINNM/FMAXNMP/FMINNMP/FMAXNMV/FMINNMV 共用 NaN 语义：单侧 NaN 取另一侧，双侧 NaN 取默认 NaN。
+    @inline(__always)
+    static func fpPick(_ a: Double, _ b: Double, sz: Bool, max wantMax: Bool) -> Double {
+        if a.isNaN || b.isNaN {
+            if a.isNaN && b.isNaN { return fpDefaultNaN(sz) }
+            return a.isNaN ? b : a
+        }
+        return wantMax ? Swift.max(a, b) : Swift.min(a, b)
+    }
+
+    // MARK: - 浮点三同（three same FP）与 pairwise
+
+    /// 覆盖 AArch64 高级 SIMD 浮点三同族（按 (U, bits[23], op) 精确匹配）：
+    ///   FADD/FSUB/FMUL/FDIV/FMAX/FMIN/FMAXNM/FMINNM/FABD/FMLA/FMLS/
+    ///   FCMEQ/FCMGE/FCMGT/FACGE/FACGT/FRECPS/FRSQRTS，
+    ///   以及 pairwise 形式 FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP（U = 1 变体）。
+    /// sz = bits[22]：0 = 单精度（2S / 4S），1 = 双精度（1D / 2D）。
+    /// 位域依据 clang 交叉汇编 + llvm-objdump 反查真实机器码
+    /// （fadd/fsub/fmul/fdiv/fmax/fmin/fmaxnm/fminnm/fabd/fmla/fmls/fcmeq/fcmge/fcmgt/
+    ///   facge/facgt/frecps/frsqrts/faddp/fmaxp/fminp）。
+    private static func executeThreeSameFP(insn: UInt32, fpu: SDRArmFPU) -> Bool {
+        let q = (insn >> 30) & 1 == 1
+        let u = (insn >> 29) & 1 == 1
+        let b23 = (insn >> 23) & 1 == 1
+        let sz = (insn >> 22) & 1 == 1
+        let rm = Int((insn >> 16) & 0x1F)
+        let op = Int((insn >> 11) & 0x1F)
+        let rn = Int((insn >> 5) & 0x1F)
+        let rd = Int(insn & 0x1F)
+
+        let esize = sz ? 64 : 32
+        let lanes = (q ? 128 : 64) / esize
+        let n = (fpu.v[rn], fpu.vh[rn])
+        let m = (fpu.v[rm], fpu.vh[rm])
+        let dOld = (fpu.v[rd], fpu.vh[rd])
+        var out: (UInt64, UInt64) = (0, 0)
+        let mask = fpMask(sz)
+
+        /// pairwise 折叠：低半 = Vn 相邻元素对，高半 = Vm 相邻元素对。
+        func pairwise(_ combine: (Double, Double) -> Double) {
+            for i in 0..<(lanes / 2) {
+                fpSet(&out, i, sz: sz, combine(fpGet(n, 2 * i, sz: sz), fpGet(n, 2 * i + 1, sz: sz)))
+                fpSet(&out, lanes / 2 + i, sz: sz,
+                      combine(fpGet(m, 2 * i, sz: sz), fpGet(m, 2 * i + 1, sz: sz)))
+            }
+        }
+
+        switch (u, b23, op) {
+        case (false, false, 0b11010):                                   // FADD
+            for i in 0..<lanes { fpSet(&out, i, sz: sz, fpGet(n, i, sz: sz) + fpGet(m, i, sz: sz)) }
+        case (false, true, 0b11010):                                    // FSUB
+            for i in 0..<lanes { fpSet(&out, i, sz: sz, fpGet(n, i, sz: sz) - fpGet(m, i, sz: sz)) }
+        case (true, true, 0b11010):                                     // FABD
+            for i in 0..<lanes { fpSet(&out, i, sz: sz, abs(fpGet(n, i, sz: sz) - fpGet(m, i, sz: sz))) }
+        case (true, false, 0b11010):                                    // FADDP
+            pairwise { $0 + $1 }
+        case (true, false, 0b11011):                                    // FMUL
+            for i in 0..<lanes { fpSet(&out, i, sz: sz, fpGet(n, i, sz: sz) * fpGet(m, i, sz: sz)) }
+        case (false, false, 0b11000):                                   // FMAXNM
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, fpPick(fpGet(n, i, sz: sz), fpGet(m, i, sz: sz), sz: sz, max: true))
+            }
+        case (false, true, 0b11000):                                    // FMINNM
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, fpPick(fpGet(n, i, sz: sz), fpGet(m, i, sz: sz), sz: sz, max: false))
+            }
+        case (true, false, 0b11000):                                    // FMAXNMP
+            pairwise { fpPick($0, $1, sz: sz, max: true) }
+        case (true, true, 0b11000):                                     // FMINNMP
+            pairwise { fpPick($0, $1, sz: sz, max: false) }
+        case (false, false, 0b11001):                                   // FMLA
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, fpGet(dOld, i, sz: sz) + fpGet(n, i, sz: sz) * fpGet(m, i, sz: sz))
+            }
+        case (false, true, 0b11001):                                    // FMLS
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, fpGet(dOld, i, sz: sz) - fpGet(n, i, sz: sz) * fpGet(m, i, sz: sz))
+            }
+        case (false, false, 0b11110):                                   // FMAX（NaN 传播）
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, fpPropagate(fpGet(n, i, sz: sz), fpGet(m, i, sz: sz), max: true))
+            }
+        case (false, true, 0b11110):                                    // FMIN（NaN 传播）
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, fpPropagate(fpGet(n, i, sz: sz), fpGet(m, i, sz: sz), max: false))
+            }
+        case (true, false, 0b11110):                                    // FMAXP（NaN 传播）
+            pairwise { fpPropagate($0, $1, max: true) }
+        case (true, true, 0b11110):                                     // FMINP（NaN 传播）
+            pairwise { fpPropagate($0, $1, max: false) }
+        case (false, false, 0b11100):                                   // FCMEQ
+            for i in 0..<lanes {
+                laneSet(&out, i, esize, fpGet(n, i, sz: sz) == fpGet(m, i, sz: sz) ? mask : 0)
+            }
+        case (true, false, 0b11100):                                    // FCMGE
+            for i in 0..<lanes {
+                laneSet(&out, i, esize, fpGet(n, i, sz: sz) >= fpGet(m, i, sz: sz) ? mask : 0)
+            }
+        case (true, true, 0b11100):                                     // FCMGT
+            for i in 0..<lanes {
+                laneSet(&out, i, esize, fpGet(n, i, sz: sz) > fpGet(m, i, sz: sz) ? mask : 0)
+            }
+        case (true, false, 0b11101):                                    // FACGE
+            for i in 0..<lanes {
+                laneSet(&out, i, esize, abs(fpGet(n, i, sz: sz)) >= abs(fpGet(m, i, sz: sz)) ? mask : 0)
+            }
+        case (true, true, 0b11101):                                     // FACGT
+            for i in 0..<lanes {
+                laneSet(&out, i, esize, abs(fpGet(n, i, sz: sz)) > abs(fpGet(m, i, sz: sz)) ? mask : 0)
+            }
+        case (false, false, 0b11111):                                   // FRECPS：2 - n*m
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, 2 - fpGet(n, i, sz: sz) * fpGet(m, i, sz: sz))
+            }
+        case (false, true, 0b11111):                                    // FRSQRTS：(3 - n*m)/2
+            for i in 0..<lanes {
+                fpSet(&out, i, sz: sz, (3 - fpGet(n, i, sz: sz) * fpGet(m, i, sz: sz)) / 2)
+            }
+        case (true, false, 0b11111):                                    // FDIV
+            for i in 0..<lanes { fpSet(&out, i, sz: sz, fpGet(n, i, sz: sz) / fpGet(m, i, sz: sz)) }
+        default:
+            return false
+        }
+        writeBack(fpu, rd, out, q: q)
+        return true
+    }
+
+    // MARK: - 跨通道归约（across lanes）
+
+    /// 覆盖 AArch64 高级 SIMD 归约族（bits[20:16] = 10000 / 10001，bit10 = 0，Q = 1）：
+    ///   整数 ADDV / SMAXV / SMINV / UMAXV / UMINV（元素 8 / 16 / 32 位），
+    ///   浮点 FMAXV / FMINV / FMAXNMV / FMINNMV（bits[23] 区分 MAX 与 MIN 对偶）。
+    /// 位域依据 clang 交叉汇编 + llvm-objdump 反查真实机器码
+    /// （addv/smaxv/sminv/umaxv/uminv/fmaxv/fminv/fmaxnmv/fminnmv）。
+    private static func executeAcrossLanes(insn: UInt32, fpu: SDRArmFPU) -> Bool {
+        guard (insn >> 30) & 1 == 1 else { return false }   // 归约族只有 Q = 1 形式
+        let u = (insn >> 29) & 1 == 1
+        let b23 = (insn >> 23) & 1 == 1
+        let size = Int((insn >> 22) & 0x3)
+        let field = Int((insn >> 16) & 0x1F)
+        let op = Int((insn >> 11) & 0x1F)
+        let rn = Int((insn >> 5) & 0x1F)
+        let rd = Int(insn & 0x1F)
+
+        let src = (fpu.v[rn], fpu.vh[rn])
+        var result: UInt64
+
+        if !u, op == 0b10111, field == 0b10001, size <= 2 {
+            // ADDV
+            let esize = 8 << size
+            var acc: UInt64 = 0
+            for i in 0..<(128 / esize) { acc = acc &+ laneGet(src, i, esize) }
+            result = acc & laneMask(esize)
+        } else if !u, op == 0b10101, field == 0b10000 || field == 0b10001, size <= 2 {
+            // SMAXV（field = 10000）/ SMINV（field = 10001）
+            let esize = 8 << size
+            let wantMax = field == 0b10000
+            var acc = laneGet(src, 0, esize)
+            for i in 1..<(128 / esize) {
+                let cur = laneGet(src, i, esize)
+                let better = wantMax
+                    ? Int64(bitPattern: signExtend(cur, esize)) > Int64(bitPattern: signExtend(acc, esize))
+                    : Int64(bitPattern: signExtend(cur, esize)) < Int64(bitPattern: signExtend(acc, esize))
+                if better { acc = cur }
+            }
+            result = acc
+        } else if u, op == 0b10101, field == 0b10000 || field == 0b10001, size <= 2 {
+            // UMAXV（field = 10000）/ UMINV（field = 10001）
+            let esize = 8 << size
+            let wantMax = field == 0b10000
+            var acc = laneGet(src, 0, esize)
+            for i in 1..<(128 / esize) {
+                let cur = laneGet(src, i, esize)
+                if (wantMax && cur > acc) || (!wantMax && cur < acc) { acc = cur }
+            }
+            result = acc
+        } else if u, field == 0b10000, op == 0b11111 || op == 0b11001, (insn >> 22) & 1 == 0 {
+            // FMAXV / FMINV（op = 11111，NaN 传播）、FMAXNMV / FMINNMV（op = 11001，NaN 忽略）；b23 = 0 → MAX 侧。
+            // 元素固定 32 位（4S）：2D 形式不存在，16 位（FP16）变体暂不覆盖，编码不符即回退未实现。
+            let wantMax = !b23
+            let propagate = op == 0b11111
+            var acc = fpGet(src, 0, sz: false)
+            for i in 1..<4 {
+                let cur = fpGet(src, i, sz: false)
+                acc = propagate ? fpPropagate(acc, cur, max: wantMax)
+                                : fpPick(acc, cur, sz: false, max: wantMax)
+            }
+            result = UInt64(Float(acc).bitPattern)
+        } else {
+            return false
+        }
+
+        fpu.v[rd] = result
+        fpu.vh[rd] = 0
+        return true
+    }
+
+    // MARK: - 标量 pairwise（scalar pairwise）
+
+    /// 覆盖 AArch64 高级 SIMD 标量 pairwise 族（bits[28:24] = 11110，bits[20:16] = 11000，bit10 = 0）：
+    ///   FADDP / FMAXP / FMINP / FMAXNMP / FMINNMP（2S / 2D 形式）。
+    /// 位域依据 clang 交叉汇编 + llvm-objdump 反查真实机器码（faddp/fmaxp/fminp/fmaxnmp/fminnmp）。
+    private static func executeScalarPairwise(insn: UInt32, fpu: SDRArmFPU) -> Bool {
+        guard (insn >> 30) & 1 == 1, (insn >> 29) & 1 == 1,
+              ((insn >> 16) & 0x1F) == 0b10000,
+              (insn >> 10) & 1 == 0 else { return false }
+
+        let b23 = (insn >> 23) & 1 == 1
+        let sz = (insn >> 22) & 1 == 1
+        let op = Int((insn >> 11) & 0x1F)
+        let rn = Int((insn >> 5) & 0x1F)
+        let rd = Int(insn & 0x1F)
+        let src = (fpu.v[rn], fpu.vh[rn])
+        let a = fpGet(src, 0, sz: sz)
+        let b = fpGet(src, 1, sz: sz)
+
+        let value: Double
+        switch op {
+        case 0b11011: value = a + b                                          // FADDP
+        case 0b11111: value = fpPropagate(a, b, max: !b23)                   // FMAXP / FMINP（NaN 传播）
+        case 0b11001: value = fpPick(a, b, sz: sz, max: !b23)                // FMAXNMP / FMINNMP（NaN 忽略）
+        default: return false
+        }
+
+        fpu.v[rd] = sz ? value.bitPattern : UInt64(Float(value).bitPattern)
+        fpu.vh[rd] = 0
+        return true
+    }
+
+    // MARK: - 按元素（by element）
+
+    /// 覆盖 AArch64 高级 SIMD 按元素族（bits[28:24] = 01111，bit10 = 0）：
+    ///   浮点 FMUL / FMLA / FMLS、整数 MUL / MLA / MLS。
+    /// 元素索引：16 位 = H:L:M，32 位 = H:L，64 位 = H。
+    /// 位域依据 clang 交叉汇编 + llvm-objdump 反查真实机器码（fmul/fmla/fmls/mul/mla/mls）。
+    private static func executeByElement(insn: UInt32, fpu: SDRArmFPU) -> Bool {
+        let q = (insn >> 30) & 1 == 1
+        let u = (insn >> 29) & 1 == 1
+        let size = Int((insn >> 22) & 0x3)
+        let l = (insn >> 21) & 1 == 1
+        let mBit = (insn >> 20) & 1 == 1
+        let opcode = Int((insn >> 12) & 0xF)
+        let h = (insn >> 11) & 1 == 1
+        let rn = Int((insn >> 5) & 0x1F)
+        let rd = Int(insn & 0x1F)
+
+        let esize = 8 << size
+        guard esize >= 16 else { return false }              // 8 位无按元素形式
+        // 16 位形式的 bit20 被借作索引 M 位，寄存器号退化为 4 位 [19:16]。
+        let rm = esize == 16 ? Int((insn >> 16) & 0xF) : Int((insn >> 16) & 0x1F)
+        let lanes = (q ? 128 : 64) / esize
+        let index: Int
+        switch esize {
+        case 16: index = (h ? 4 : 0) | (l ? 2 : 0) | (mBit ? 1 : 0)
+        case 32: index = (h ? 2 : 0) | (l ? 1 : 0)
+        default: index = h ? 1 : 0
+        }
+        guard index < lanes else { return false }
+
+        let n = (fpu.v[rn], fpu.vh[rn])
+        let dOld = (fpu.v[rd], fpu.vh[rd])
+        let elem = laneGet((fpu.v[rm], fpu.vh[rm]), index, esize)
+        var out: (UInt64, UInt64) = (0, 0)
+        let full = laneMask(esize)
+
+        switch (u, opcode) {
+        case (false, 0b1000):
+            // MUL（16 / 32 位）
+            guard esize != 64 else { return false }
+            for i in 0..<lanes { laneSet(&out, i, esize, (laneGet(n, i, esize) &* elem) & full) }
+        case (true, 0b0000), (true, 0b0100):
+            // MLA（0000）/ MLS（0100），均仅 16 / 32 位
+            guard esize != 64 else { return false }
+            let isAdd = opcode == 0b0000
+            for i in 0..<lanes {
+                let product = (laneGet(n, i, esize) &* elem) & full
+                let base = laneGet(dOld, i, esize)
+                laneSet(&out, i, esize, isAdd ? (base &+ product) & full : (base &- product) & full)
+            }
+        case (false, 0b1001), (false, 0b0001), (false, 0b0101):
+            // FMUL（1001）/ FMLA（0001）/ FMLS（0101），仅 32 / 64 位
+            guard esize == 32 || esize == 64 else { return false }
+            let sz = esize == 64
+            let e = fpGet((fpu.v[rm], fpu.vh[rm]), index, sz: sz)
+            for i in 0..<lanes {
+                let nv = fpGet(n, i, sz: sz)
+                let value: Double
+                switch opcode {
+                case 0b1001: value = nv * e
+                case 0b0001: value = fpGet(dOld, i, sz: sz) + nv * e
+                default: value = fpGet(dOld, i, sz: sz) - nv * e
+                }
+                fpSet(&out, i, sz: sz, value)
+            }
+        default:
+            return false
+        }
+        writeBack(fpu, rd, out, q: q)
+        return true
     }
 
     // MARK: - 位工具
