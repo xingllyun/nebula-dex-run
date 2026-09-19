@@ -210,9 +210,19 @@ public final class SDRZipArchive {
 
     /// raw deflate 解压（windowBits = -15）
     static func inflateRaw(_ input: [UInt8], expected: Int) throws -> [UInt8] {
+        try inflateWindowed(input, windowBits: -15, expected: expected)
+    }
+
+    /// zlib 封装格式解压（windowBits = 15）：供 guest libz 桥的 uncompress 使用。
+    static func inflateZlib(_ input: [UInt8], expected: Int) throws -> [UInt8] {
+        try inflateWindowed(input, windowBits: 15, expected: expected)
+    }
+
+    /// 通用 zlib 解压：windowBits 取正为 zlib 封装、取负为 raw deflate。
+    static func inflateWindowed(_ input: [UInt8], windowBits: Int32, expected: Int) throws -> [UInt8] {
         guard !input.isEmpty else { return [] }
         var strm = z_stream()
-        let status = inflateInit2_(&strm, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+        let status = inflateInit2_(&strm, windowBits, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
         guard status == Z_OK else { throw SDRAppError(.apkBadZip, "inflateInit2 失败：\(status)") }
         defer { inflateEnd(&strm) }
 

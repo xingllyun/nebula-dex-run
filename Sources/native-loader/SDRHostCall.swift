@@ -27,17 +27,33 @@ public final class SDRHostCallContext {
     public let memory: SDRMemoryGuard
     public let services: SDRSystemServices
     public let arguments: [UInt64]
+    /// V0..V7 的 64 位原始位模式（AAPCS64 浮点/向量参数寄存器，供 libm 桥取 double 实参）。
+    public let floatArguments: [UInt64]
 
-    public init(memory: SDRMemoryGuard, services: SDRSystemServices, arguments: [UInt64]) {
+    public init(memory: SDRMemoryGuard, services: SDRSystemServices, arguments: [UInt64],
+                floatArguments: [UInt64] = []) {
         self.memory = memory
         self.services = services
         self.arguments = arguments
+        self.floatArguments = floatArguments
     }
 
     /// a0..a5；越界参数按 0 处理（与寄存器未初始化语义一致）。
     public func arg(_ index: Int) -> UInt64 {
         guard index >= 0, index < arguments.count else { return 0 }
         return arguments[index]
+    }
+
+    /// v0..v7 按 double 语义读取（libm 桥的实参通道）；越界按 0.0 处理。
+    public func floatArg(_ index: Int) -> Double {
+        guard index >= 0, index < floatArguments.count else { return 0 }
+        return Double(bitPattern: floatArguments[index])
+    }
+
+    /// s0..s7 按 float 语义读取（取 v 寄存器低 32 位）。
+    public func singleFloatArg(_ index: Int) -> Float {
+        guard index >= 0, index < floatArguments.count else { return 0 }
+        return Float(bitPattern: UInt32(truncatingIfNeeded: floatArguments[index]))
     }
 
     /// 读取 guest 内存；失败返回 nil（调用方按 errno 语义处理，而非抛错打断解释执行）。
@@ -119,8 +135,21 @@ public final class SDRHostCall {
     public static var symbolLimit: Int { 0x1_0000 }
 
     public typealias Body = (SDRHostCallContext) throws -> UInt64
+    /// 标量（libm 族）实现：实参经 `floatArg(_:)` 读取，返回值写回 V0。
+    public typealias ScalarBody = (SDRHostCallContext) throws -> Double
 
-    private var bodies: [Body] = []
+    /// 单次托管调用的返回通道：整数写回 X0，标量写回 V0。
+    public enum Outcome {
+        case integer(UInt64)
+        case scalar(Double)
+    }
+
+    private enum Entry {
+        case integer(Body)
+        case scalar(ScalarBody)
+    }
+
+    private var entries: [Entry] = []
     private var names: [String] = []
     private var indexByName: [String: UInt64] = [:]
     private let lock = NSLock()
@@ -129,14 +158,27 @@ public final class SDRHostCall {
 
     // MARK: 符号表
 
-    /// 注册符号并返回其稳定索引；重名注册幂等（返回既有索引）。
+    /// 注册整数返回符号并返回其稳定索引；重名注册幂等（返回既有索引）。
     @discardableResult
     public func register(_ name: String, body: @escaping Body) -> UInt64 {
         lock.lock()
         defer { lock.unlock() }
         if let existing = indexByName[name] { return existing }
-        let index = UInt64(bodies.count)
-        bodies.append(body)
+        let index = UInt64(entries.count)
+        entries.append(.integer(body))
+        names.append(name)
+        indexByName[name] = index
+        return index
+    }
+
+    /// 注册标量（double 返回）符号：用于 libm 族，返回值经 BRK 陷阱写回 V0。
+    @discardableResult
+    public func registerScalar(_ name: String, body: @escaping ScalarBody) -> UInt64 {
+        lock.lock()
+        defer { lock.unlock() }
+        if let existing = indexByName[name] { return existing }
+        let index = UInt64(entries.count)
+        entries.append(.scalar(body))
         names.append(name)
         indexByName[name] = index
         return index
@@ -153,7 +195,7 @@ public final class SDRHostCall {
     public var symbolCount: Int {
         lock.lock()
         defer { lock.unlock() }
-        return bodies.count
+        return entries.count
     }
 
     public func symbols() -> [String] {
@@ -165,7 +207,7 @@ public final class SDRHostCall {
     public func removeAll() {
         lock.lock()
         defer { lock.unlock() }
-        bodies.removeAll()
+        entries.removeAll()
         names.removeAll()
         indexByName.removeAll()
     }
@@ -176,15 +218,25 @@ public final class SDRHostCall {
     public func dispatch(index: UInt64,
                          context: SDRCpuContext,
                          memory: SDRMemoryGuard,
-                         services: SDRSystemServices) throws -> UInt64? {
+                         services: SDRSystemServices) throws -> Outcome? {
         lock.lock()
-        let body: Body? = index < UInt64(bodies.count) ? bodies[Int(index)] : nil
+        let entry: Entry? = index < UInt64(entries.count) ? entries[Int(index)] : nil
         lock.unlock()
-        guard let body else { return nil }
+        guard let entry else { return nil }
         let arguments = (0..<6).map { slot -> UInt64 in
             slot < context.x.count ? context.x[slot] : 0
         }
-        return try body(SDRHostCallContext(memory: memory, services: services, arguments: arguments))
+        let floats = (0..<8).map { slot -> UInt64 in
+            slot < context.fpu.v.count ? context.fpu.v[slot] : 0
+        }
+        let call = SDRHostCallContext(memory: memory, services: services,
+                                      arguments: arguments, floatArguments: floats)
+        switch entry {
+        case .integer(let body):
+            return .integer(try body(call))
+        case .scalar(let body):
+            return .scalar(try body(call))
+        }
     }
 
     // MARK: 桩机器码
