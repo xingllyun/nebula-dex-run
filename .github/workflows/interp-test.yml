@@ -58,7 +58,7 @@ jobs:
                  Sources/ios-adapter/SDRSystemServices.swift"
           swiftc -swift-version 5 -O -o interp-test $FILES Tests/interp/main.swift
           swiftc -swift-version 5 -O -o bench $FILES Tests/interp/bench.swift
-          swiftc -swift-version 5 -O -o syscall-smoke $FILES Tests/interp/syscall_smoke.swift
+          swiftc -swift-version 5 -O -o syscall-smoke $FILES Tests/interp/syscall_smoke/main.swift
 
       - name: Run acceptance vectors (baseline)
         run: |
