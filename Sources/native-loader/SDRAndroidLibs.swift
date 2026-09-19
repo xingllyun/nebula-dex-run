@@ -125,10 +125,10 @@ public final class SDRAndroidLibs {
     }
 
     public func resetProbe() {
-        probeLock.lock()
+        Self.probeLock.lock()
         emittedMessageCount = 0
         lastMessage = nil
-        probeLock.unlock()
+        Self.probeLock.unlock()
     }
 
     static func string(_ ctx: SDRHostCallContext, _ address: UInt64) -> String {
