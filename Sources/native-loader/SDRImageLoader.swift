@@ -85,17 +85,26 @@ public final class SDRImageLoader {
                 throw SDRAppError(.soImageInvalid, "段尺寸非法：memsz < filesz")
             }
             let vaddr = base + ph.vaddr
-            memory.map(name: "seg@\(String(vaddr, radix: 16))",
-                       base: vaddr, size: ph.memsz,
-                       readable: true,
-                       writable: ph.writable,
-                       executable: false)
+            // 先以可写建段并灌入初始镜像，再按 ELF 声明权限收权：
+            // 只读段（.text/.rodata 所在的 R 段）若一开始即不可写，初始字节无从写入，
+            // 会让任何含只读 PT_LOAD 的真实 .so 装载即报“非法写”。
+            guard memory.map(name: "seg@\(String(vaddr, radix: 16))",
+                             base: vaddr, size: ph.memsz,
+                             readable: true,
+                             writable: true,
+                             executable: false) else {
+                throw SDRAppError(.soImageInvalid, "段映射失败：vaddr=0x\(String(vaddr, radix: 16)) size=\(ph.memsz)")
+            }
 
             let fileEnd = Int(ph.offset + ph.filesz)
             if fileEnd <= bytes.count, ph.filesz > 0 {
                 let payload = Array(bytes[Int(ph.offset)..<fileEnd])
                 try memory.write(vaddr, bytes: payload)
             }
+
+            // 收权到真实段权限：此后对只读段的写入会被沙盒拒绝（重定位只允许落在可写段）
+            memory.protect(address: vaddr, size: ph.memsz,
+                           readable: true, writable: ph.writable, executable: false)
 
             if ph.executable {
                 textLo = min(textLo, vaddr); textHi = max(textHi, vaddr + ph.memsz)

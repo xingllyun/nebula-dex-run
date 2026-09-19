@@ -183,6 +183,13 @@ do {
     let image = try SDRImageLoader().load(bytes: fixture, path: "synthetic-aarch64.so", preferredABI: "arm64-v8a")
     let base = image.loadBase
 
+    check(image.memory.segment(for: base)?.writable == false,
+          "只读 PT_LOAD（flags=R）装载后按 ELF 权限收权为不可写（回归）")
+    check(image.memory.segment(for: base)?.readable == true,
+          "只读 PT_LOAD 仍可读")
+    check(image.memory.segment(for: base + 0x1000)?.writable == true,
+          "可写 PT_LOAD（flags=RW）保持可写，重定位目标段未被误收权")
+
     let slotRelative = try image.memory.readScalar(base + 0x1000, count: 8)
     let slotPlainZero = try image.memory.readScalar(base + 0x1008, count: 8)
     let slotUndefined = try image.memory.readScalar(base + 0x1010, count: 8)
