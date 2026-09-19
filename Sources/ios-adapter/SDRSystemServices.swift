@@ -724,7 +724,7 @@ public final class SDRSystemServices {
             return 0
         }
 
-        register(number: SDRSyscallNumber.mprotect, name: "mprotect") { _, address, length, protRaw, _, _, interp in
+        register(number: SDRSyscallNumber.mprotect, name: "mprotect") { address, length, protRaw, _, _, _, interp in
             let prot = Self.signed32(protRaw)
             guard interp.memory.protect(address: address, size: length,
                                         readable: prot & SDRSyscallNumber.MMapProt.read != 0,
@@ -740,9 +740,15 @@ public final class SDRSystemServices {
             if request == 0 { return self.programBreak }
             if self.programBreak == 0 {
                 let base = (request + 0xFFFF) / 0x1_0000 * 0x1_0000
-                self.programBreak = base
-                SDRLogger.d("syscall", "brk 初始化为 0x\(String(base, radix: 16))")
-                return base
+                let size: UInt64 = 0x1_0000        // 初始堆窗口 64 KiB，后续按需增长
+                guard interp.memory.map(name: "heap", base: base, size: size,
+                                        readable: true, writable: true, executable: false) else {
+                    SDRLogger.w("syscall", "brk 初始堆段映射失败 0x\(String(base, radix: 16))")
+                    return 0
+                }
+                self.programBreak = base + size
+                SDRLogger.d("syscall", "brk 建立堆段 [0x\(String(base, radix: 16)), 0x\(String(self.programBreak, radix: 16)))")
+                return self.programBreak
             }
             let previous = self.programBreak
             guard request > previous else {
@@ -918,8 +924,7 @@ public final class SDRSystemServices {
             return 0
         }
 
-        register(number: SDRSyscallNumber.clock_nanosleep, name: "clock_nanosleep") { [weak self] _, _, requestPtr, _, _, _, interp in
-            guard let self = self else { return Self.failure(SDRSyscallNumber.Errno.einval) }
+        register(number: SDRSyscallNumber.clock_nanosleep, name: "clock_nanosleep") { _, _, requestPtr, _, _, _, interp in
             guard let raw = try? interp.memory.read(requestPtr, count: 16) else {
                 return Self.failure(SDRSyscallNumber.Errno.efault)
             }
