@@ -873,20 +873,19 @@ public final class SDRLibc {
 
     /// C fopen 模式串 → openat 标志位。
     static func openFlags(forMode mode: String) -> Int32 {
-        let flags = SDRSyscallNumber.OpenFlag
         switch mode.first {
         case "r":
-            return mode.contains("+") ? flags.rdwr : flags.rdonly
+            return mode.contains("+") ? SDRSyscallNumber.OpenFlag.rdwr : SDRSyscallNumber.OpenFlag.rdonly
         case "w":
-            var value = mode.contains("+") ? flags.rdwr : flags.wronly
-            value |= flags.creat | flags.trunc
+            var value = mode.contains("+") ? SDRSyscallNumber.OpenFlag.rdwr : SDRSyscallNumber.OpenFlag.wronly
+            value |= SDRSyscallNumber.OpenFlag.creat | SDRSyscallNumber.OpenFlag.trunc
             return value
         case "a":
-            var value = mode.contains("+") ? flags.rdwr : flags.wronly
-            value |= flags.creat | flags.append
+            var value = mode.contains("+") ? SDRSyscallNumber.OpenFlag.rdwr : SDRSyscallNumber.OpenFlag.wronly
+            value |= SDRSyscallNumber.OpenFlag.creat | SDRSyscallNumber.OpenFlag.append
             return value
         default:
-            return flags.rdonly
+            return SDRSyscallNumber.OpenFlag.rdonly
         }
     }
 
