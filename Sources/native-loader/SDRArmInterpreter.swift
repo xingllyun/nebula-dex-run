@@ -89,6 +89,8 @@ public final class SDRArmInterpreter {
     public private(set) var context: SDRCpuContext
     public let memory: SDRMemoryGuard
     public let services: SDRSystemServices
+    /// guest → host 托管调用桥（libc 符号桩入口）
+    public let hostCall: SDRHostCall
     public var instructionBudget: Int
     public private(set) var executedCount: Int = 0
     /// 未覆盖指令编码（去重，供阶段二补全时定位缺口）
@@ -125,10 +127,12 @@ public final class SDRArmInterpreter {
     public private(set) var decodeCacheMisses: Int = 0
 
     public init(context: SDRCpuContext, memory: SDRMemoryGuard,
-                services: SDRSystemServices, budget: Int = 500_000) {
+                services: SDRSystemServices, hostCall: SDRHostCall = SDRHostCall.shared,
+                budget: Int = 500_000) {
         self.context = context
         self.memory = memory
         self.services = services
+        self.hostCall = hostCall
         self.instructionBudget = budget
     }
 
@@ -1090,6 +1094,21 @@ public final class SDRArmInterpreter {
         }
     }
 
+    // MARK: - 托管调用陷阱
+
+    /// BRK #0x4E44：按 x16 中的符号索引取 host 实现，返回值写回 x0 后继续执行（PC 自动 +4 落到桩尾 ret）。
+    /// 索引越界（未注册符号）按 -ENOSYS 回落，不改变解释器的停机/退出语义。
+    private func handleHostCall(_ insn: UInt32) throws -> SDRInterpreterState {
+        let index = SDRHostCall.trapIndex(insn)
+        if let value = try hostCall.dispatch(index: index, context: context,
+                                             memory: memory, services: services) {
+            context.x0 = value
+            return .running
+        }
+        context.x0 = SDRSystemServices.failure(SDRSyscallNumber.Errno.enosys)
+        return .running
+    }
+
     // MARK: - 分支与系统
 
     private func executeBranchOrSystem(_ insn: UInt32) throws -> SDRInterpreterState {
@@ -1097,8 +1116,15 @@ public final class SDRArmInterpreter {
         if (insn & 0xFFE0_001F) == 0xD400_0001 {
             return try handleSVC(insn)
         }
-        // BRK / HLT：进入停机态（软断点）
-        if (insn & 0xFFE0_001F) == 0xD420_0000 || (insn & 0xFFE0_001F) == 0xD440_0000 {
+        // BRK：0x4E44 为托管调用陷阱（libc 符号桩），其余立即数保持软断点停机语义
+        if (insn & 0xFFE0_001F) == 0xD420_0000 {
+            if SDRHostCall.isHostCallTrap(insn) {
+                return try handleHostCall(insn)
+            }
+            return .halted
+        }
+        // HLT：进入停机态（软断点）
+        if (insn & 0xFFE0_001F) == 0xD440_0000 {
             return .halted
         }
         // B / BL
