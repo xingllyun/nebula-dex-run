@@ -17,6 +17,31 @@
 
 import Foundation
 
+/// 日志桥观测点：记录宿主侧已转发的日志条数与最近一条内容。
+///
+/// 观测点由 `SDRAndroidLibs` 的安装实例持有，安装到哪个实例，
+/// 该桥产生的转发就记在哪个实例上（与 shared 单例不互相干扰）。
+public final class SDRAndroidLogProbe {
+    private let lock = NSLock()
+
+    public private(set) var emittedMessageCount = 0
+    public private(set) var lastMessage: String?
+
+    func record(_ line: String) {
+        lock.lock()
+        emittedMessageCount += 1
+        lastMessage = line
+        lock.unlock()
+    }
+
+    func reset() {
+        lock.lock()
+        emittedMessageCount = 0
+        lastMessage = nil
+        lock.unlock()
+    }
+}
+
 public final class SDRAndroidLibs {
     public static let shared = SDRAndroidLibs()
 
@@ -63,11 +88,14 @@ public final class SDRAndroidLibs {
     public private(set) var registeredSymbols: [String] = []
     private var installedBridge: ObjectIdentifier?
 
-    /// 日志桥观测点：已转发条数与最近一条内容（供冒烟与排障使用）。
-    public private(set) var emittedMessageCount = 0
-    public private(set) var lastMessage: String?
+    /// 日志桥观测点（挂在安装实例上，见 SDRAndroidLogProbe）。
+    public let probe = SDRAndroidLogProbe()
 
-    private static let probeLock = NSLock()
+    /// 已转发的日志条数。
+    public var emittedMessageCount: Int { probe.emittedMessageCount }
+
+    /// 最近一条已转发日志的内容。
+    public var lastMessage: String? { probe.lastMessage }
 
     public init() {}
 
@@ -107,8 +135,8 @@ public final class SDRAndroidLibs {
 
     // MARK: liblog
 
-    /// android_LogPriority → 宿主日志级别（2=VERBOSE…7=FATAL）。
-    public static func emit(priority: Int32, tag: String, message: String) {
+    /// android_LogPriority → 宿主日志级别（2=VERBOSE…7=FATAL），并记入观测点。
+    public static func emit(priority: Int32, tag: String, message: String, probe: SDRAndroidLogProbe) {
         let line = tag.isEmpty ? message : "[\(tag)] \(message)"
         switch priority {
         case 2: SDRLogger.v("guest.log", line)
@@ -118,17 +146,11 @@ public final class SDRAndroidLibs {
         case 6, 7: SDRLogger.e("guest.log", line)
         default: SDRLogger.i("guest.log", line)
         }
-        probeLock.lock()
-        shared.emittedMessageCount += 1
-        shared.lastMessage = line
-        probeLock.unlock()
+        probe.record(line)
     }
 
     public func resetProbe() {
-        Self.probeLock.lock()
-        emittedMessageCount = 0
-        lastMessage = nil
-        Self.probeLock.unlock()
+        probe.reset()
     }
 
     static func string(_ ctx: SDRHostCallContext, _ address: UInt64) -> String {
@@ -137,11 +159,12 @@ public final class SDRAndroidLibs {
     }
 
     private func installLogFamily(_ bridge: SDRHostCall) {
+        let probe = self.probe
         // __android_log_write(int prio, const char* tag, const char* text) → 写入字节数
         add(bridge, "__android_log_write") { ctx in
             SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(0)),
                                 tag: SDRAndroidLibs.string(ctx, ctx.arg(1)),
-                                message: SDRAndroidLibs.string(ctx, ctx.arg(2)))
+                                message: SDRAndroidLibs.string(ctx, ctx.arg(2)), probe: probe)
             let length = ctx.readCStringBytes(ctx.arg(2))?.count ?? 0
             return UInt64(length + 1)
         }
@@ -150,21 +173,21 @@ public final class SDRAndroidLibs {
         add(bridge, "__android_log_print") { ctx in
             let tag = SDRAndroidLibs.string(ctx, ctx.arg(1))
             let format = SDRAndroidLibs.string(ctx, ctx.arg(2))
-            SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(0)), tag: tag, message: format)
+            SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(0)), tag: tag, message: format, probe: probe)
             return UInt64(format.utf8.count + 1)
         }
         // __android_log_vprint(int prio, const char* tag, const char* fmt, va_list ap)：同上
         add(bridge, "__android_log_vprint") { ctx in
             let tag = SDRAndroidLibs.string(ctx, ctx.arg(1))
             let format = SDRAndroidLibs.string(ctx, ctx.arg(2))
-            SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(0)), tag: tag, message: format)
+            SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(0)), tag: tag, message: format, probe: probe)
             return UInt64(format.utf8.count + 1)
         }
         // __android_log_buf_write(int bufID, int prio, const char* tag, const char* text)
         add(bridge, "__android_log_buf_write") { ctx in
             SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(1)),
                                 tag: SDRAndroidLibs.string(ctx, ctx.arg(2)),
-                                message: SDRAndroidLibs.string(ctx, ctx.arg(3)))
+                                message: SDRAndroidLibs.string(ctx, ctx.arg(3)), probe: probe)
             let length = ctx.readCStringBytes(ctx.arg(3))?.count ?? 0
             return UInt64(length + 1)
         }
@@ -172,7 +195,7 @@ public final class SDRAndroidLibs {
         add(bridge, "__android_log_buf_print") { ctx in
             let tag = SDRAndroidLibs.string(ctx, ctx.arg(2))
             let format = SDRAndroidLibs.string(ctx, ctx.arg(3))
-            SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(1)), tag: tag, message: format)
+            SDRAndroidLibs.emit(priority: Int32(truncatingIfNeeded: ctx.arg(1)), tag: tag, message: format, probe: probe)
             return UInt64(format.utf8.count + 1)
         }
         // __android_log_assert(const char* cond, const char* tag, const char* fmt, ...)
@@ -181,7 +204,7 @@ public final class SDRAndroidLibs {
             let tag = SDRAndroidLibs.string(ctx, ctx.arg(1))
             let format = SDRAndroidLibs.string(ctx, ctx.arg(2))
             SDRAndroidLibs.emit(priority: 7, tag: tag,
-                                message: condition.isEmpty ? format : "assert(\(condition)): \(format)")
+                                message: condition.isEmpty ? format : "assert(\(condition)): \(format)", probe: probe)
             return 0
         }
         // __android_log_is_loggable(int prio, const char* tag, int defaultPrio) → 恒可记录
