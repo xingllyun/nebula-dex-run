@@ -212,7 +212,7 @@ public final class SDRZipArchive {
     static func inflateRaw(_ input: [UInt8], expected: Int) throws -> [UInt8] {
         guard !input.isEmpty else { return [] }
         var strm = z_stream()
-        var status = inflateInit2_(&strm, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
+        let status = inflateInit2_(&strm, -15, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size))
         guard status == Z_OK else { throw SDRAppError(.apkBadZip, "inflateInit2 失败：\(status)") }
         defer { inflateEnd(&strm) }
 

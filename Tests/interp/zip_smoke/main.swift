@@ -114,8 +114,8 @@ do {
     check(archive.entries.count == 3, "内存构造 ZIP 条目数为 3")
     check(archive.contains("classes.dex"), "contains 能命中 classes.dex")
     check(archive.entry("lib/arm64-v8a/libc++_shared.so") != nil, "entries 可索引嵌套目录中的 .so")
-    check(archive.extract("classes.dex") == dexPayload, "stored 条目 extract 内容逐字节一致")
-    check(archive.extract("lib/arm64-v8a/libc++_shared.so") == elfStub, "二级路径条目解压一致")
+    check((try? archive.extract("classes.dex")) == dexPayload, "stored 条目 extract 内容逐字节一致")
+    check((try? archive.extract("lib/arm64-v8a/libc++_shared.so")) == elfStub, "二级路径条目解压一致")
     check(!archive.contains("missing.dex"), "不存在的条目返回 false 而非崩溃")
 } catch {
     check(false, "内存构造 ZIP 解析抛错：\(error)")
