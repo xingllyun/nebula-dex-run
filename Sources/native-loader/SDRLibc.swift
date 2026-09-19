@@ -411,8 +411,10 @@ public final class SDRLibc {
     static func parseInteger(_ address: UInt64, base: Int, _ ctx: SDRHostCallContext) -> (Int64, Int) {
         guard let bytes = loadCString(address, ctx), !bytes.isEmpty else { return (0, 0) }
         var index = 0
+        // C 语义：解析前先跳过前导空白（isspace 集合）
+        while index < bytes.count, SDRLibc.isSpace(bytes[index]) { index += 1 }
         var negative = false
-        if bytes[index] == 0x2D || bytes[index] == 0x2B {
+        if index < bytes.count, bytes[index] == 0x2D || bytes[index] == 0x2B {
             negative = bytes[index] == 0x2D
             index += 1
         }
@@ -426,6 +428,11 @@ public final class SDRLibc {
             } else {
                 radix = 10
             }
+        } else if radix == 16, index + 1 < bytes.count, bytes[index] == 0x30,
+                  bytes[index + 1] == 0x78 || bytes[index + 1] == 0x58 {
+            index += 2
+        } else if radix < 2 || radix > 36 {
+            radix = 10
         }
         var value: Int64 = 0
         var consumed = 0
@@ -436,6 +443,11 @@ public final class SDRLibc {
             index += 1
         }
         return (negative ? -value : value, index)
+    }
+
+    /// C 语义空白字符判定（isspace：空格 + \t\n\v\f\r）。
+    private static func isSpace(_ byte: UInt8) -> Bool {
+        byte == 0x20 || (byte >= 0x09 && byte <= 0x0D)
     }
 
     private static func digitValue(_ byte: UInt8) -> Int? {

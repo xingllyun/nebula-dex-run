@@ -56,6 +56,7 @@ func execute(_ words: [UInt32], args: [UInt64], label: String) -> UInt64 {
     let context = SDRCpuContext()
     let interpreter = SDRArmInterpreter(context: context, memory: memory, services: services,
                                         hostCall: bridge, budget: 64)
+    services.bind(interpreter: interpreter)
     _ = try? interpreter.run(entry: code, args: args)
     return context.x0
 }
@@ -228,14 +229,14 @@ if let path = guestString("file.path", services.workingDirectory + "/libc_smoke.
     let fd = callProgram("open", args: [path, UInt64(bitPattern: Int64(openFlags)), 0o644], label: "open.w")
     expect(fd > 0, "libc open 打开写通道（fd=\(fd)）")
     let wrote = callProgram("write", args: [fd, payload, 14], label: "write")
-    expect(wrote == 14, "libc write 写入 14 字节")
+    expect(wrote == 14, "libc write 写入 14 字节（实际 \(wrote)）")
     _ = callProgram("close", args: [fd], label: "close")
 
     let readFd = callProgram("open", args: [path, UInt64(bitPattern: Int64(SDRSyscallNumber.OpenFlag.rdonly)), 0], label: "open.r")
     expect(readFd > 0, "libc open 打开读通道（fd=\(readFd)）")
     if let sink = guestBuffer("file.read") {
         let got = callProgram("read", args: [readFd, sink, 14], label: "read")
-        expect(got == 14, "libc read 读回 14 字节")
+        expect(got == 14, "libc read 读回 14 字节（实际 \(got)）")
         expect(readGuest(sink, count: 14) == Array("libc-roundtrip".utf8), "libc 文件往返内容一致")
     }
     _ = callProgram("close", args: [readFd], label: "close.r")
