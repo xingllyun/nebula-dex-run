@@ -183,32 +183,32 @@ AIGC:
 | 文件 | 行数 | 说明 |
 |------|------|------|
 | `SDRDexOpcode.swift` | 223 | Dalvik 指令名 / 宽度 / 未定义槽位表 |
-| `SDRDexParser.swift` | 467 | 文件头 + 字符串/类型/proto/字段/方法 id 表 + class_def/class_data + code_item 懒加载 |
-| `SDRDexInterpreter.swift` | 815 | 指令主循环：move/const/运算/分支/数组/字段/invoke/long 全量整数族，帧栈 + 静态字段 + 异常分发 |
-| `SDRDexHeap.swift` | 153 | 对象 / 数组 / 字符串堆 |
+| `SDRDexParser.swift` | 470 | 文件头 + 字符串/类型/proto/字段/方法 id 表 + class_def/class_data + code_item 懒加载 |
+| `SDRDexInterpreter.swift` | 968 | 指令主循环：move/const/整数与浮点全量运算/分支/数组/字段/invoke/long/浮点转换与 cmp 族，帧栈 + 静态字段 + 异常分发 |
+| `SDRDexHeap.swift` | 154 | 对象 / 数组 / 字符串堆 |
 | `SDRDexLaunchPlan.swift` | 105 | 入口定位：main（含 `[Ljava/lang/String;` 注入）→ 类初始化 → 普通方法降级 |
 
-**合计 1,763 行**。`SDRAppContainer.launch` 已接入真实 DEX 解析与执行链路，不再是空跑。
+**合计 1,920 行**。`SDRAppContainer.launch` 已接入真实 DEX 解析与执行链路，不再是空跑。
 
-**验收口径**：dex-smoke 57 用例 JVM 原生输出 ↔ Swift 解释器输出逐行对拍，见 `Tests/dex/`。
+**验收口径**：dex-smoke 115 用例 JVM 原生输出 ↔ Swift 解释器输出逐行对拍，见 `Tests/dex/`。
 
 ---
 
 ## 4 待开发的模块
 
-### 4.1 DEX 解释器补全（阶段三·已收口）
+### 4.1 DEX 解释器补全（阶段四·浮点族已落地）
 
 原先的骨架（297 行 / 7 条指令）已由 §3.11 的五文件实现取代：常量池、类数据、code_item 提取、
 对象/数组模型、invoke 分派、栈帧与静态字段全部就位，入口定位由 `SDRDexLaunchPlan` 负责。
 
-**已实现**：整数指令族（move/const/运算/分支/数组/字段/invoke/long/switch）、静态字段累积语义、跨类调用、
-`move-result` 语义（紧随 invoke）。
+**已实现**：整数指令族（move/const/运算/分支/数组/字段/invoke/long/switch）、
+浮点指令族（cmp-float/double、neg-float/double、float/double 四则与 /2addr、int/long/float/double 互转，共 36 条）、
+静态字段累积语义、跨类调用、`move-result` 语义（紧随 invoke）。
 
-**未实现（保留显式抛错，留待阶段四）**：
-1. 浮点指令族（const-wide 浮点、float/double 运算与转换）
-2. `invoke-polymorphic` / `invoke-custom`
-3. `throw` 与异常表（try/catch）
-4. JNI 环境（`JNIEnv` 函数表）与类加载器、GC
+**未实现（保留显式抛错，留待后续步骤）**：
+1. `throw` 与异常表（try/catch）：0x0D `move-exception` / 0x27 `throw`
+2. `invoke-polymorphic` / `invoke-custom`（0xFA-0xFD）
+3. JNI 环境（`JNIEnv` 函数表）与类加载器、GC
 
 上述未实现指令一律抛 `dexOpUnsupported`，**严禁静默跳过或按宽度滑过**——静默跳过会让字节码流「看似跑通」却语义全错；该口径由 dex-smoke 对拍守住。
 
@@ -344,8 +344,8 @@ output/nebula-dex-run/
 |------|------|------|
 | 阶段一 | AArch64 指令集补全（乘法除法、浮点 NEON/VFP、异常与系统调用、性能优化） | ✅ 完成 |
 | 阶段二 | 原生系统库与系统调用层（syscall/最小libc/ELF装载/Android基础库） | ✅ 完成 |
-| 阶段三 | DEX 解释器核心（解析 / 指令 / 堆 / 入口定位） | ✅ 已收口（57 用例对拍链路就绪） |
-| 阶段四 | Java 运行时与安卓 API 框架、Skia Metal 渲染层、触控与生命周期、性能与体积填充 | 🚧 进行中 |
+| 阶段三 | DEX 解释器核心（解析 / 指令 / 堆 / 入口定位） | ✅ 已收口（对拍链路就绪，当前 115 用例） |
+| 阶段四 | Java 运行时与安卓 API 框架、Skia Metal 渲染层、触控与生命周期、性能与体积填充 | 🚧 进行中（浮点族 36 条指令已落地，115 用例全绿） |
 | 阶段五 | 周边能力与稳定性收尾（凭证迁移/签名增强等） | 🚧 待开发 |
 
 ---

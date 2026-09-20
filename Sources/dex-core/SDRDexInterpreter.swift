@@ -39,7 +39,7 @@ public protocol SDRDexNativeBridge: AnyObject {
 /// 设计约定：
 /// 1. 寄存器统一 `Int64` 存放；32 位语义一律先 `s32` 截断再运算，宽值完整存于起始寄存器，
 ///    高槽（起始 +1）同步写入高 32 位，与 `move-wide` / `invoke` 取参一致。
-/// 2. 未实现指令（浮点族、invoke-polymorphic、throw 等）**一律抛 `dexOpUnsupported`**，
+/// 2. 未实现指令（throw 异常模型、invoke-polymorphic、JNI 等）**一律抛 `dexOpUnsupported`**，
 ///    严禁静默跳过或按宽度滑过——静默跳过会让字节码流"看似跑通"却语义全错。
 /// 3. `move-result` 族读取 `result`，语义为「紧随 invoke 的下一条指令」。
 public final class SDRDexInterpreter {
@@ -73,6 +73,8 @@ public final class SDRDexInterpreter {
 
     private static let intOps = ["add", "sub", "mul", "div", "rem", "and", "or", "xor", "shl", "shr", "ushr"]
     private static let longOps = ["add", "sub", "mul", "div", "rem", "and", "or", "xor", "shl", "shr", "ushr"]
+    /// 浮点二元运算符表（0xA6-0xAA / 0xAB-0xAF / 0xC6-0xCA / 0xCB-0xCF 共用）
+    private static let fpOps = ["add", "sub", "mul", "div", "rem"]
 
     public init(file: SDRDexFile? = nil, bridge: (any SDRDexNativeBridge)? = nil) {
         self.file = file
@@ -403,9 +405,16 @@ public final class SDRDexInterpreter {
                 if target != 0 { next = pc + Int(target) }
 
             // ---- 0x2D-0x31 比较 ----
-            case 0x2D, 0x2E, 0x2F, 0x30:
-                throw SDRAppError(.dexOpUnsupported,
-                                  "\(SDRDexOpcode.name(opcode: opcode)) 属浮点族，待阶段五实现 @pc=\(pc)")
+            case 0x2D, 0x2E, 0x2F, 0x30:                                // cmpl/cmpg-float/double（23x）
+                let cmpDst = Int(unit >> 8)
+                let cmpLo = Int(u1(code, pc + 1) & 0x00FF)
+                let cmpHi = Int(u1(code, pc + 1) >> 8)
+                let nanResult: Int64 = (opcode == 0x2D || opcode == 0x2F) ? -1 : 1
+                if opcode == 0x2D || opcode == 0x2E {
+                    wr32(&regs, cmpDst, cmpFloat(rd32(regs, cmpLo), rd32(regs, cmpHi), nanResult: nanResult))
+                } else {
+                    wrW(&regs, cmpDst, cmpDouble(rdW(regs, cmpLo), rdW(regs, cmpHi), nanResult: nanResult))
+                }
             case 0x31:                                                  // cmp-long（23x：AA=目标，第二字低字节=左，高字节=右）
                 let lhs = rdW(regs, Int(u1(code, pc + 1) & 0x00FF))
                 let rhs = rdW(regs, Int((u1(code, pc + 1) >> 8) & 0x00FF))
@@ -571,9 +580,12 @@ public final class SDRDexInterpreter {
             case 0x7C: wr32(&regs, Int((unit >> 8) & 0x0F), s32(~s32(rd32(regs, Int((unit >> 12) & 0x0F)))))       // not-int
             case 0x7D: wrW(&regs, Int((unit >> 8) & 0x0F), 0 &- rdW(regs, Int((unit >> 12) & 0x0F)))               // neg-long
             case 0x7E: wrW(&regs, Int((unit >> 8) & 0x0F), ~rdW(regs, Int((unit >> 12) & 0x0F)))                   // not-long
-            case 0x7F, 0x80:
-                throw SDRAppError(.dexOpUnsupported,
-                                  "\(SDRDexOpcode.name(opcode: opcode)) 属浮点族，待阶段五实现 @pc=\(pc)")
+            case 0x7F:                                                  // neg-float（12x，符号位翻转含 NaN）
+                wr32(&regs, Int((unit >> 8) & 0x0F),
+                     bits32(-fp32(rd32(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x80:                                                  // neg-double（12x，符号位翻转含 NaN）
+                wrW(&regs, Int((unit >> 8) & 0x0F),
+                    bits64(-fp64(rdW(regs, Int((unit >> 12) & 0x0F)))))
 
             // ---- 0x81-0x8F 类型转换（整数域；浮点域待阶段五）----
             case 0x81: wrW(&regs, Int((unit >> 8) & 0x0F), s32(rd32(regs, Int((unit >> 12) & 0x0F))))              // int-to-long
@@ -581,9 +593,36 @@ public final class SDRDexInterpreter {
             case 0x8D: wr32(&regs, Int((unit >> 8) & 0x0F), s8(rd32(regs, Int((unit >> 12) & 0x0F))))              // int-to-byte
             case 0x8E: wr32(&regs, Int((unit >> 8) & 0x0F), rd32(regs, Int((unit >> 12) & 0x0F)) & 0xFFFF)         // int-to-char
             case 0x8F: wr32(&regs, Int((unit >> 8) & 0x0F), s16(rd32(regs, Int((unit >> 12) & 0x0F))))             // int-to-short
-            case 0x82, 0x83, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C:
-                throw SDRAppError(.dexOpUnsupported,
-                                  "\(SDRDexOpcode.name(opcode: opcode)) 属浮点转换族，待阶段五实现 @pc=\(pc)")
+            case 0x82:                                                  // int-to-float（12x）
+                wr32(&regs, Int((unit >> 8) & 0x0F),
+                     bits32(Float(Int32(truncatingIfNeeded: rd32(regs, Int((unit >> 12) & 0x0F))))))
+            case 0x83:                                                  // int-to-double（12x）
+                wrW(&regs, Int((unit >> 8) & 0x0F),
+                    bits64(Double(Int32(truncatingIfNeeded: rd32(regs, Int((unit >> 12) & 0x0F))))))
+            case 0x85:                                                  // long-to-float（12x）
+                wr32(&regs, Int((unit >> 8) & 0x0F),
+                     bits32(Float(rdW(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x86:                                                  // long-to-double（12x）
+                wrW(&regs, Int((unit >> 8) & 0x0F),
+                    bits64(Double(rdW(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x87:                                                  // float-to-int（12x）
+                wr32(&regs, Int((unit >> 8) & 0x0F),
+                     floatToInt32(fp32(rd32(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x88:                                                  // float-to-long（12x）
+                wrW(&regs, Int((unit >> 8) & 0x0F),
+                    floatToInt64(fp32(rd32(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x89:                                                  // float-to-double（12x）
+                wrW(&regs, Int((unit >> 8) & 0x0F),
+                    bits64(Double(fp32(rd32(regs, Int((unit >> 12) & 0x0F))))))
+            case 0x8A:                                                  // double-to-int（12x）
+                wr32(&regs, Int((unit >> 8) & 0x0F),
+                     doubleToInt32(fp64(rdW(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x8B:                                                  // double-to-long（12x）
+                wrW(&regs, Int((unit >> 8) & 0x0F),
+                    doubleToInt64(fp64(rdW(regs, Int((unit >> 12) & 0x0F)))))
+            case 0x8C:                                                  // double-to-float（12x）
+                wr32(&regs, Int((unit >> 8) & 0x0F),
+                     bits32(Float(fp64(rdW(regs, Int((unit >> 12) & 0x0F))))))
 
             // ---- 0x90-0x9A int 二元 ----
             case 0x90...0x9A:
@@ -601,10 +640,17 @@ public final class SDRDexInterpreter {
                 let value = try longBinary(Self.longOps[opcode - 0x9B], b, c)
                 wrW(&regs, a, value)
 
-            // ---- 0xA6-0xAF 浮点二元（阶段五）----
+            // ---- 0xA6-0xAF 浮点二元（23x）----
             case 0xA6...0xAF:
-                throw SDRAppError(.dexOpUnsupported,
-                                  "\(SDRDexOpcode.name(opcode: opcode)) 属浮点族，待阶段五实现 @pc=\(pc)")
+                let fpDst = Int(unit >> 8)
+                let fpL = Int(u1(code, pc + 1) & 0xFF)
+                let fpR = Int(u1(code, pc + 1) >> 8)
+                let fpSym = Self.fpOps[(opcode - 0xA6) % 5]
+                if opcode <= 0xAA {
+                    wr32(&regs, fpDst, try floatBinary(fpSym, rd32(regs, fpL), rd32(regs, fpR)))
+                } else {
+                    wrW(&regs, fpDst, try doubleBinary(fpSym, rdW(regs, fpL), rdW(regs, fpR)))
+                }
 
             // ---- 0xB0-0xBA int /2addr ----
             case 0xB0...0xBA:
@@ -620,10 +666,16 @@ public final class SDRDexInterpreter {
                 let value = try longBinary(Self.longOps[opcode - 0xBB], rdW(regs, a), b)
                 wrW(&regs, a, value)
 
-            // ---- 0xC6-0xCF 浮点 /2addr（阶段五）----
+            // ---- 0xC6-0xCF 浮点 /2addr（12x）----
             case 0xC6...0xCF:
-                throw SDRAppError(.dexOpUnsupported,
-                                  "\(SDRDexOpcode.name(opcode: opcode)) 属浮点族，待阶段五实现 @pc=\(pc)")
+                let fpA = Int((unit >> 8) & 0x0F)
+                let fpB = Int((unit >> 12) & 0x0F)
+                let fp2Sym = Self.fpOps[(opcode - 0xC6) % 5]
+                if opcode <= 0xCA {
+                    wr32(&regs, fpA, try floatBinary(fp2Sym, rd32(regs, fpA), rd32(regs, fpB)))
+                } else {
+                    wrW(&regs, fpA, try doubleBinary(fp2Sym, rdW(regs, fpA), rdW(regs, fpB)))
+                }
 
             // ---- 0xD0-0xD7 int/lit16 ----
             case 0xD0...0xD7:
@@ -735,6 +787,105 @@ public final class SDRDexInterpreter {
         if y == 0 { throw SDRAppError(.dexOpUnsupported, "rem-long 除数为 0") }
         if x == Int64.min && y == -1 { return 0 }
         return x % y
+    }
+
+    // MARK: - 浮点语义（32/64 位位模式承载，IEEE 754 与 JVM 对齐）
+
+    /// 32 位寄存器槽 → Float（还原位模式）
+    @inline(__always) private func fp32(_ bits: Int64) -> Float {
+        Float(bitPattern: UInt32(truncatingIfNeeded: bits))
+    }
+
+    /// Float → 32 位位模式
+    @inline(__always) private func bits32(_ value: Float) -> Int64 {
+        Int64(UInt32(value.bitPattern))
+    }
+
+    /// 64 位寄存器对 → Double（还原位模式）
+    @inline(__always) private func fp64(_ bits: Int64) -> Double {
+        Double(bitPattern: UInt64(bitPattern: bits))
+    }
+
+    /// Double → 64 位位模式
+    @inline(__always) private func bits64(_ value: Double) -> Int64 {
+        Int64(bitPattern: value.bitPattern)
+    }
+
+    /// float 二元：除零得 ±Inf、0/0 得 NaN，均不抛错（与 JVM 一致）；
+    /// rem-float 为截断余数（fmod 语义，结果符号随被除数）
+    private func floatBinary(_ sym: String, _ aBits: Int64, _ bBits: Int64) throws -> Int64 {
+        let a = fp32(aBits)
+        let b = fp32(bBits)
+        switch sym {
+        case "add": return bits32(a + b)
+        case "sub": return bits32(a - b)
+        case "mul": return bits32(a * b)
+        case "div": return bits32(a / b)
+        case "rem": return bits32(fmod(a, b))
+        default: throw SDRAppError(.dexOpUnsupported, "未知 float 二元运算：\(sym)")
+        }
+    }
+
+    /// double 二元：语义同 floatBinary
+    private func doubleBinary(_ sym: String, _ aBits: Int64, _ bBits: Int64) throws -> Int64 {
+        let a = fp64(aBits)
+        let b = fp64(bBits)
+        switch sym {
+        case "add": return bits64(a + b)
+        case "sub": return bits64(a - b)
+        case "mul": return bits64(a * b)
+        case "div": return bits64(a / b)
+        case "rem": return bits64(fmod(a, b))
+        default: throw SDRAppError(.dexOpUnsupported, "未知 double 二元运算：\(sym)")
+        }
+    }
+
+    /// cmp-float：任一为 NaN 时返回 nanResult（cmpl=-1 / cmpg=1），否则 -1/0/1
+    private func cmpFloat(_ aBits: Int64, _ bBits: Int64, nanResult: Int64) -> Int64 {
+        let a = fp32(aBits)
+        let b = fp32(bBits)
+        if a.isNaN || b.isNaN { return nanResult }
+        return a > b ? 1 : (a == b ? 0 : -1)
+    }
+
+    /// cmp-double：语义同 cmpFloat
+    private func cmpDouble(_ aBits: Int64, _ bBits: Int64, nanResult: Int64) -> Int64 {
+        let a = fp64(aBits)
+        let b = fp64(bBits)
+        if a.isNaN || b.isNaN { return nanResult }
+        return a > b ? 1 : (a == b ? 0 : -1)
+    }
+
+    /// float → int：JVM 收窄语义（NaN→0，上溢→Int32.max，下溢→Int32.min，截断向零）
+    private func floatToInt32(_ value: Float) -> Int64 {
+        if value.isNaN { return 0 }
+        if value >= 2147483648.0 { return Int64(Int32.max) }
+        if value < -2147483648.0 { return Int64(Int32.min) }
+        return Int64(Int32(value))
+    }
+
+    /// float → long：JVM 收窄语义（NaN→0，越界饱和）
+    private func floatToInt64(_ value: Float) -> Int64 {
+        if value.isNaN { return 0 }
+        if value >= 9223372036854775808.0 { return Int64.max }
+        if value < -9223372036854775808.0 { return Int64.min }
+        return Int64(value)
+    }
+
+    /// double → int：JVM 收窄语义
+    private func doubleToInt32(_ value: Double) -> Int64 {
+        if value.isNaN { return 0 }
+        if value >= 2147483648.0 { return Int64(Int32.max) }
+        if value <= -2147483649.0 { return Int64(Int32.min) }
+        return Int64(Int32(value))
+    }
+
+    /// double → long：JVM 收窄语义
+    private func doubleToInt64(_ value: Double) -> Int64 {
+        if value.isNaN { return 0 }
+        if value >= 9223372036854775808.0 { return Int64.max }
+        if value < -9223372036854775808.0 { return Int64.min }
+        return Int64(value)
     }
 
     // MARK: - 底层工具

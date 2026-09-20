@@ -12,6 +12,16 @@ public class DexExpect {
         System.out.println(signature + "=" + value);
     }
 
+    /** float 返回值：按 IEEE 位模式（有符号 32 位）打印，与解释器 return 语义对齐 */
+    private static void p(String signature, float value) {
+        System.out.println(signature + "=" + (long) (int) Float.floatToRawIntBits(value));
+    }
+
+    /** double 返回值：按 IEEE 位模式（64 位）打印，与解释器 return-wide 语义对齐 */
+    private static void p(String signature, double value) {
+        System.out.println(signature + "=" + Double.doubleToRawLongBits(value));
+    }
+
     public static void main(String[] args) {
         // ---------- NebulaDexProbe：常量装载 ----------
         p("LNebulaDexProbe;->c4()I", NebulaDexProbe.c4());
@@ -81,5 +91,65 @@ public class DexExpect {
         p("LNebulaDexWide;->widen(I)J", NebulaDexWide.widen(-7));
         p("LNebulaDexWide;->narrow(J)I", NebulaDexWide.narrow(0x1122334455667788L));
         p("LNebulaDexWide;->wideHigh16()J", NebulaDexWide.wideHigh16());
+
+        // ---------- NebulaDexFloat：浮点二元 / 2addr / neg / 转换 / cmp ----------
+        p("LNebulaDexFloat;->addF(FF)F", NebulaDexFloat.addF(Float.intBitsToFloat(1069547520), Float.intBitsToFloat(1074790400)));
+        p("LNebulaDexFloat;->subF(FF)F", NebulaDexFloat.subF(Float.intBitsToFloat(1069547520), Float.intBitsToFloat(1074790400)));
+        p("LNebulaDexFloat;->mulF(FF)F", NebulaDexFloat.mulF(Float.intBitsToFloat(-1067450368), Float.intBitsToFloat(1073741824)));
+        p("LNebulaDexFloat;->divF(FF)F", NebulaDexFloat.divF(Float.intBitsToFloat(1065353216), Float.intBitsToFloat(0)));
+        p("LNebulaDexFloat;->divF(FF)F", NebulaDexFloat.divF(Float.intBitsToFloat(0), Float.intBitsToFloat(0)));
+        p("LNebulaDexFloat;->divF(FF)F", NebulaDexFloat.divF(Float.intBitsToFloat(-1082130432), Float.intBitsToFloat(0)));
+        p("LNebulaDexFloat;->remF(FF)F", NebulaDexFloat.remF(Float.intBitsToFloat(-1058013184), Float.intBitsToFloat(1073741824)));
+        p("LNebulaDexFloat;->remF(FF)F", NebulaDexFloat.remF(Float.intBitsToFloat(1089470464), Float.intBitsToFloat(0)));
+        p("LNebulaDexFloat;->addF(FF)F", NebulaDexFloat.addF(Float.intBitsToFloat(2139095039), Float.intBitsToFloat(2139095039)));
+        p("LNebulaDexFloat;->addD(DD)D", NebulaDexFloat.addD(Double.longBitsToDouble(4609434218613702656L), Double.longBitsToDouble(4612248968380809216L)));
+        p("LNebulaDexFloat;->subD(DD)D", NebulaDexFloat.subD(Double.longBitsToDouble(-4620693217682128896L), Double.longBitsToDouble(4598175219545276416L)));
+        p("LNebulaDexFloat;->mulD(DD)D", NebulaDexFloat.mulD(Double.longBitsToDouble(-4608308318706860032L), Double.longBitsToDouble(4611686018427387904L)));
+        p("LNebulaDexFloat;->divD(DD)D", NebulaDexFloat.divD(Double.longBitsToDouble(4607182418800017408L), Double.longBitsToDouble(0L)));
+        p("LNebulaDexFloat;->divD(DD)D", NebulaDexFloat.divD(Double.longBitsToDouble(-4616189618054758400L), Double.longBitsToDouble(0L)));
+        p("LNebulaDexFloat;->remD(DD)D", NebulaDexFloat.remD(Double.longBitsToDouble(4620130267728707584L), Double.longBitsToDouble(-4611686018427387904L)));
+        p("LNebulaDexFloat;->remD(DD)D", NebulaDexFloat.remD(Double.longBitsToDouble(4620130267728707584L), Double.longBitsToDouble(0L)));
+        p("LNebulaDexFloat;->addD(DD)D", NebulaDexFloat.addD(Double.longBitsToDouble(9218868437227405311L), Double.longBitsToDouble(9218868437227405311L)));
+        p("LNebulaDexFloat;->chainF(FF)F", NebulaDexFloat.chainF(Float.intBitsToFloat(1069547520), Float.intBitsToFloat(1073741824)));
+        p("LNebulaDexFloat;->chainF(FF)F", NebulaDexFloat.chainF(Float.intBitsToFloat(-1058013184), Float.intBitsToFloat(1073741824)));
+        p("LNebulaDexFloat;->chainD(DD)D", NebulaDexFloat.chainD(Double.longBitsToDouble(4613937818241073152L), Double.longBitsToDouble(4616189618054758400L)));
+        p("LNebulaDexFloat;->mixF(FF)F", NebulaDexFloat.mixF(Float.intBitsToFloat(1077936128), Float.intBitsToFloat(1073741824)));
+        p("LNebulaDexFloat;->mixF(FF)F", NebulaDexFloat.mixF(Float.intBitsToFloat(-1058013184), Float.intBitsToFloat(1073741824)));
+        p("LNebulaDexFloat;->mixD(DD)D", NebulaDexFloat.mixD(Double.longBitsToDouble(4613937818241073152L), Double.longBitsToDouble(4611686018427387904L)));
+        p("LNebulaDexFloat;->mixD(DD)D", NebulaDexFloat.mixD(Double.longBitsToDouble(4609434218613702656L), Double.longBitsToDouble(4602678819172646912L)));
+        p("LNebulaDexFloat;->negF(F)F", NebulaDexFloat.negF(Float.intBitsToFloat(-1071644672)));
+        p("LNebulaDexFloat;->negF(F)F", NebulaDexFloat.negF(Float.intBitsToFloat(2143289344)));
+        p("LNebulaDexFloat;->negD(D)D", NebulaDexFloat.negD(Double.longBitsToDouble(4614500768194494464L)));
+        p("LNebulaDexFloat;->negD(D)D", NebulaDexFloat.negD(Double.longBitsToDouble(-9223372036854775808L)));
+        p("LNebulaDexFloat;->i2f(I)F", NebulaDexFloat.i2f(16777217));
+        p("LNebulaDexFloat;->i2f(I)F", NebulaDexFloat.i2f(-2147483648));
+        p("LNebulaDexFloat;->i2d(I)D", NebulaDexFloat.i2d(-2147483648));
+        p("LNebulaDexFloat;->l2f(J)F", NebulaDexFloat.l2f(1234567890123456789L));
+        p("LNebulaDexFloat;->l2d(J)D", NebulaDexFloat.l2d(-9223372036854775808L));
+        p("LNebulaDexFloat;->f2i(F)I", (long) (NebulaDexFloat.f2i(Float.intBitsToFloat(1082088489))));
+        p("LNebulaDexFloat;->f2i(F)I", (long) (NebulaDexFloat.f2i(Float.intBitsToFloat(2143289344))));
+        p("LNebulaDexFloat;->f2i(F)I", (long) (NebulaDexFloat.f2i(Float.intBitsToFloat(1621981420))));
+        p("LNebulaDexFloat;->f2i(F)I", (long) (NebulaDexFloat.f2i(Float.intBitsToFloat(-525502228))));
+        p("LNebulaDexFloat;->f2l(F)J", NebulaDexFloat.f2l(Float.intBitsToFloat(1621981420)));
+        p("LNebulaDexFloat;->f2l(F)J", NebulaDexFloat.f2l(Float.intBitsToFloat(-525502228)));
+        p("LNebulaDexFloat;->f2l(F)J", NebulaDexFloat.f2l(Float.intBitsToFloat(2143289344)));
+        p("LNebulaDexFloat;->f2d(F)D", NebulaDexFloat.f2d(Float.intBitsToFloat(1069547520)));
+        p("LNebulaDexFloat;->d2i(D)I", (long) (NebulaDexFloat.d2i(Double.longBitsToDouble(4613262278296967578L))));
+        p("LNebulaDexFloat;->d2i(D)I", (long) (NebulaDexFloat.d2i(Double.longBitsToDouble(9221120237041090560L))));
+        p("LNebulaDexFloat;->d2i(D)I", (long) (NebulaDexFloat.d2i(Double.longBitsToDouble(-4472713992753643520L))));
+        p("LNebulaDexFloat;->d2l(D)J", NebulaDexFloat.d2l(Double.longBitsToDouble(4906019910204099648L)));
+        p("LNebulaDexFloat;->d2l(D)J", NebulaDexFloat.d2l(Double.longBitsToDouble(9221120237041090560L)));
+        p("LNebulaDexFloat;->d2f(D)F", NebulaDexFloat.d2f(Double.longBitsToDouble(9094988921128908188L)));
+        p("LNebulaDexFloat;->d2f(D)F", NebulaDexFloat.d2f(Double.longBitsToDouble(4609434218613702656L)));
+        p("LNebulaDexFloat;->lessF(FF)I", (long) (NebulaDexFloat.lessF(Float.intBitsToFloat(1065353216), Float.intBitsToFloat(1073741824))));
+        p("LNebulaDexFloat;->lessF(FF)I", (long) (NebulaDexFloat.lessF(Float.intBitsToFloat(1073741824), Float.intBitsToFloat(1065353216))));
+        p("LNebulaDexFloat;->lessF(FF)I", (long) (NebulaDexFloat.lessF(Float.intBitsToFloat(2143289344), Float.intBitsToFloat(1065353216))));
+        p("LNebulaDexFloat;->greaterF(FF)I", (long) (NebulaDexFloat.greaterF(Float.intBitsToFloat(1073741824), Float.intBitsToFloat(1065353216))));
+        p("LNebulaDexFloat;->greaterF(FF)I", (long) (NebulaDexFloat.greaterF(Float.intBitsToFloat(1065353216), Float.intBitsToFloat(1073741824))));
+        p("LNebulaDexFloat;->greaterF(FF)I", (long) (NebulaDexFloat.greaterF(Float.intBitsToFloat(2143289344), Float.intBitsToFloat(1065353216))));
+        p("LNebulaDexFloat;->lessD(DD)I", (long) (NebulaDexFloat.lessD(Double.longBitsToDouble(4607182418800017408L), Double.longBitsToDouble(4611686018427387904L))));
+        p("LNebulaDexFloat;->lessD(DD)I", (long) (NebulaDexFloat.lessD(Double.longBitsToDouble(9221120237041090560L), Double.longBitsToDouble(4607182418800017408L))));
+        p("LNebulaDexFloat;->greaterD(DD)I", (long) (NebulaDexFloat.greaterD(Double.longBitsToDouble(4611686018427387904L), Double.longBitsToDouble(4607182418800017408L))));
+        p("LNebulaDexFloat;->greaterD(DD)I", (long) (NebulaDexFloat.greaterD(Double.longBitsToDouble(4607182418800017408L), Double.longBitsToDouble(9221120237041090560L))));
     }
 }

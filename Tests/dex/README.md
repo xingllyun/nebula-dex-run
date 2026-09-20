@@ -18,12 +18,12 @@ AIGC:
 
 | 文件 | 作用 |
 |------|------|
-| `src/*.java` | Java 样本（`NebulaDexProbe` / `NebulaDexFlow` / `NebulaDexSwitch` / `NebulaDexWide`），覆盖常量装载、int/long 二元运算、控制流、数组、静态字段、跨类调用、分支表 |
+| `src/*.java` | Java 样本（`NebulaDexProbe` / `NebulaDexFlow` / `NebulaDexSwitch` / `NebulaDexWide` / `NebulaDexFloat`），覆盖常量装载、int/long 二元运算、控制流、数组、静态字段、跨类调用、分支表，以及 float/double 二元（23x 与 /2addr）、neg、int/long/float/double 互转、cmp-float/double |
 | `src/DexExpect.java` | 期望值驱动：在 JVM 上按固定顺序调用样本方法，打印 `签名=值` |
 | `cases.json` | 用例清单（签名 + 实参），顺序与 `DexExpect.java` **严格一致**；静态字段跨用例累积，顺序即语义 |
 | `main.swift` | Swift 侧驱动：装载 d8 产出的 `classes.dex`，逐用例执行并打印同格式清单 |
 
-当前规模：**57 个用例**。
+当前规模：**115 个用例**（整数与长整数族 57 + 浮点族 58）。
 
 ## 运行方式
 
@@ -61,5 +61,11 @@ diff -u build/expect.txt build/actual.txt && echo PASS
 2. 在 `DexExpect.java` 里按**追加顺序**补一行 `p("L类;->方法(proto)ret", 类.方法(实参));`
 3. 在 `cases.json` 的 `cases` 数组**同一位置**补同一签名与实参（数组用 `{"intarray": [...]}`）；
 4. 两侧顺序必须一致——静态字段会跨用例累积，顺序错位会导致后续期望值整体偏移；
+4.1 浮点用例的实参一律写 **IEEE 位模式的有符号十进制**（float 用 32 位、double 用 64 位），
+    `DexExpect` 侧用 `Float.intBitsToFloat(...)` / `Double.longBitsToDouble(...)` 还原，
+    浮点返回值统一按位模式打印，避免两侧十进制浮点格式化差异；
+4.2 浮点样本的运算数必须来自方法参数——写在方法体里的浮点字面量会被 javac/d8 常量折叠，
+    指令消失后对拍虽然仍绿，但浮点 opcode 实际未被执行；
+
 5. 未实现指令必须继续抛 `dexOpUnsupported`，**严禁**为让对拍变绿而静默跳过指令。
 *（内容由AI生成，仅供参考）*
