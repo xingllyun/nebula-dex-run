@@ -1,0 +1,84 @@
+# Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
+# Copyright © 2026 Xingyun Cloud Tech | NebulaDex Project | Released under the MIT License
+name: 缺陷报告
+description: 报告 NebulaDex 在构建、启动、运行期的缺陷（真机崩溃、编译失败、行为不符预期）
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先确认：该缺陷是否已在 [Releases](https://github.com/xingllyun/nebula-dex-run/releases) 的最新未签名包上复现；
+        若问题只出现在某个历史构建，请在下方写清 build 号。
+  - type: input
+    id: build
+    attributes:
+      label: 构建版本
+      description: Releases 页可见，例如 build-47；若为本地自建请注明提交短哈希
+      placeholder: build-47
+    validations:
+      required: true
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 所属阶段
+      description: 按项目阶段一~五归类，便于定位责任链路
+      options:
+        - 阶段一 AArch64 / 系统库基线
+        - 阶段二 系统库 / 沙箱
+        - 阶段三 DEX 解释器
+        - 阶段四 渲染层 / 触控
+        - 阶段五 JNI / GC / invokedynamic
+        - 构建与 CI（ios-build / interp-test / dex-smoke）
+        - 不确定
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 尽量给出可复现的最小路径；涉及 APK 时请写清 APK 来源与架构目录
+      placeholder: |
+        1. 侧载 build-47 未签名包
+        2. 启动后导入 xxx.apk
+        3. 点击运行
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 若为崩溃请附崩溃栈首几帧；若为 CI 失败请附工作流名与失败步骤
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / 崩溃栈 / CI 输出
+      description: 直接粘贴文本，勿只发截图；超长内容可放 gist 或附下载链接
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: device
+    attributes:
+      label: 设备与系统
+      placeholder: iPhone 15 Pro / iOS 18.2（模拟器请注明）
+    validations:
+      required: false
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: 提交前自检
+      options:
+        - label: 我已在最新构建上复现过该问题
+          required: true
+        - label: 我已确认该问题不属于「NEON float/reduce 标量 pairwise 8 例已知失败」
+          required: false

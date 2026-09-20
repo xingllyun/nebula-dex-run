@@ -1,0 +1,13 @@
+# Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
+# Copyright © 2026 Xingyun Cloud Tech | NebulaDex Project | Released under the MIT License
+blank_issues_enabled: false
+contact_links:
+  - name: 最新未签名构建包（IPA）
+    url: https://github.com/xingllyun/nebula-dex-run/releases
+    about: 真机复现问题前，请先确认最新 build 是否仍有该现象
+  - name: 项目开发文档
+    url: https://github.com/xingllyun/nebula-dex-run/blob/main/docs/NebulaDex-%E9%A1%B9%E7%9B%AE%E5%BC%80%E5%8F%91%E6%96%87%E6%A1%A3.md
+    about: 阶段划分、渲染层设计、已知项说明
+  - name: CI 工作流状态
+    url: https://github.com/xingllyun/nebula-dex-run/actions
+    about: 构建与回归门禁（iOS 未签名构建 / AArch64 解释器测试 / DEX Smoke）
