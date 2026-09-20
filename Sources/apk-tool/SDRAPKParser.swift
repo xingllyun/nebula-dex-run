@@ -49,6 +49,11 @@ public final class SDRAPKParser {
         archive = try SDRZipArchive(url: apkURL)
     }
 
+    /// 内存归档构造：APK 字节已在内存中（导入校验、CI 冒烟）时复用同一条解析链路
+    public init(archive: SDRZipArchive) {
+        self.archive = archive
+    }
+
     public func parse() throws -> SDRAPKMeta {
         let dexFiles = archive.entries
             .filter { $0.name.hasSuffix(".dex") && !$0.name.contains("/") }
@@ -59,9 +64,11 @@ public final class SDRAPKParser {
             throw SDRAppError(.apkNoDex, "APK 内未找到 classes*.dex")
         }
 
+        // 排序保证装载候选稳定（arm64-v8a 目录按字典序先于 armeabi-v7a）
         let soFiles = archive.entries
             .filter { $0.name.hasPrefix("lib/") && $0.name.hasSuffix(".so") }
             .map(\.name)
+            .sorted()
 
         let abis = Array(Set(soFiles.compactMap { path -> String? in
             let parts = path.split(separator: "/")
@@ -85,7 +92,17 @@ public final class SDRAPKParser {
 
     public func extractDex(_ name: String) throws -> [UInt8] { try archive.extract(name) }
 
+    /// 提取 SO 字节。`name` 兼容两种入参：
+    /// - 裸文件名：`lib7-Zip-JBinding.so` → 按 `abi` 拼成 `lib/<abi>/<name>`
+    /// - 含 ABI 目录的全路径：`lib/arm64-v8a/lib7-Zip-JBinding.so` → 直接取用
+    ///
+    /// 历史缺陷：旧实现对全路径入参无条件再拼一次 `lib/<abi>/`，
+    /// 得到 `lib/arm64-v8a/lib/arm64-v8a/xxx.so`，真机启动因此误报
+    /// `APK_BAD_ZIP 条目不存在`（load 首个 SO 即失败）。
     public func extractSo(_ name: String, abi: String) throws -> [UInt8]? {
+        if name.contains("/") {
+            return try archive.extract(name)
+        }
         guard abis.contains(abi) else { return nil }
         return try archive.extract("lib/\(abi)/\(name)")
     }

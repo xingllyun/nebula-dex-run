@@ -27,6 +27,26 @@ jobs:
           xcrun --sdk iphoneos --show-sdk-version
           sw_vers
 
+      - name: Type-check Swift sources (render layer gate)
+        run: |
+          set -o pipefail
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          FILES=$(find Sources -name '*.swift' | sort)
+          echo "类型检查文件总数: $(printf '%s\n' "$FILES" | wc -l | tr -d ' ')"
+          echo "渲染层文件数: $(ls Sources/render/*.swift | wc -l | tr -d ' ')"
+          xcrun --sdk iphoneos swiftc -typecheck \
+            -swift-version 5 \
+            -sdk "$SDK" \
+            -target arm64-apple-ios16.0 \
+            -import-objc-header Sources/framework/NebulaDex-Bridging-Header.h \
+            $FILES 2>&1 | tee typecheck.log
+          if grep -q "error:" typecheck.log; then
+            echo "::error::Swift 类型检查未通过（含渲染层校验）"
+            grep "error:" typecheck.log | head -50
+            exit 1
+          fi
+          echo "类型检查通过：渲染层 + 全量源文件"
+
       - name: Install XcodeGen
         run: |
           brew install xcodegen

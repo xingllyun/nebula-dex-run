@@ -134,11 +134,15 @@ public final class SDRAppContainer {
             SDRLogger.i("container", "解释器链路就绪，符号样本：\(sample.joined(separator: ", "))；\(execution)")
 
             var loadedSO: String?
-            if let so = meta.soFiles.first {
-                let soBytes = try parser.extractSo(so, abi: meta.abis.first ?? "arm64-v8a")
+            // 装载候选：优先本机首选 ABI 目录下的 SO，避免误取其它 ABI 的镜像
+            let preferredABI = meta.abis.first ?? "arm64-v8a"
+            let soCandidate = meta.soFiles.first { $0.hasPrefix("lib/\(preferredABI)/") }
+                ?? meta.soFiles.first
+            if let so = soCandidate {
+                let soBytes = try parser.extractSo(so, abi: preferredABI)
                 if let bytes = soBytes {
                     let loader = SDRImageLoader()
-                    let image = try loader.load(bytes: bytes, path: so, preferredABI: meta.abis.first)
+                    let image = try loader.load(bytes: bytes, path: so, preferredABI: preferredABI)
                     let services = SDRSystemServices()
                     let ctx = SDRCpuContext(pc: SDRImageLoaderEntryPoint(image: image))
                     let armInterp = SDRArmInterpreter(context: ctx,

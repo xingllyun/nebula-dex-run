@@ -6,6 +6,7 @@
 #            最小 libc 冒烟（托管调用陷阱 / 内存·字符串·堆·格式化·文件转发）
 #            宿主桩绑定冒烟（符号解析 → guest 桩区 → 索引分派）
 #            阶段二 · 步骤四验收：Android 基础库适配（liblog / libm / libz）与宿主桩区可执行性
+# 阶段四验收：触控路由冒烟（UIKit 触点流 → Android MotionEvent 合成 / 抖动抑制 / 长按·双击判定）
 # 不依赖 iOS 模拟器，直接在 macOS runner 上以命令行方式编译解释器核心并跑黄金向量，
 # 最后附一轮吞吐量基准（信息性输出，不作为门禁）。
 
@@ -49,6 +50,9 @@ jobs:
                  Sources/native-loader/SDRHostStubPool.swift \
                  Sources/native-loader/SDRAndroidLibs.swift \
                  Sources/apk-tool/SDRZipArchive.swift \
+                 Sources/apk-tool/SDRBinaryXML.swift \
+                 Sources/apk-tool/SDRAPKParser.swift \
+                 Sources/render/SDRTouchRouter.swift \
                  Sources/sandbox/SDRAddressSpaceAllocator.swift \
                  Sources/sandbox/SDRMemoryBudget.swift \
                  Sources/sandbox/SDRMemoryGuard.swift \
@@ -77,6 +81,7 @@ jobs:
           swiftc -swift-version 5 -O -o settings-smoke $FILES Tests/interp/settings_smoke/main.swift
           swiftc -swift-version 5 -O -o host-smoke $FILES Tests/interp/host_smoke/main.swift
           swiftc -swift-version 5 -O -o android-libs-smoke $FILES Tests/interp/android_libs_smoke/main.swift
+          swiftc -swift-version 5 -O -o touch-smoke $FILES Tests/interp/touch_smoke/main.swift
 
       - name: Run acceptance vectors (baseline)
         run: |
@@ -142,6 +147,11 @@ jobs:
         run: |
           set -euo pipefail
           ./android-libs-smoke
+
+      - name: Run touch routing smoke (stage 4)
+        run: |
+          set -euo pipefail
+          ./touch-smoke
 
       - name: Throughput benchmark (informational)
         run: |

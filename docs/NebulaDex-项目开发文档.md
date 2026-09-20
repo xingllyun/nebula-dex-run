@@ -2,12 +2,14 @@
 AIGC:
     Label: "1"
     ContentProducer: 001191440300708461136T1XGW3
-    ProduceID: ed38b03a482bb8c9cc01ec95f4dd35e7_2662d139b44b11f1b3c552540024e231
-    ReservedCode1: kutQ/fDuEXt7Cdf38VxUAUk7uUoR6XyqDQA2CtXhqxBp16ycNqxu5aaMBEgmYyibdOWt1e0c730FrPldVSVztinPCMpWuYrXmrxDMD6tEkf8Q4hRxP8+EgeDnxBbDqAkiZtkH/gZcfprsPuHA/1dzXg7GYyhMwx1GyRuHEjOLLnsR9z5OB0C4MSYb3U=
+    ProduceID: ed38b03a482bb8c9cc01ec95f4dd35e7_60d15cc5b4d711f19285525400638852
+    ReservedCode1: p2JcRn0eG5QBNXJNLJWGTecW656YKZTsalLb8EHJnVR8/MpVu4EEgx4eTmR56fHF67mgCyKRuKTXI0nyvTtrX/r1SLPG3xrb0zL8F5IyC+LRfQruEf6QnzWDRlNnCmsGdQBTouce5duDjNk8qZH8+M5fb1lsNkAXHM0cB69t/rDAk8dI60igsMo6PPM=
     ContentPropagator: 001191440300708461136T1XGW3
-    PropagateID: ed38b03a482bb8c9cc01ec95f4dd35e7_2662d139b44b11f1b3c552540024e231
-    ReservedCode2: kutQ/fDuEXt7Cdf38VxUAUk7uUoR6XyqDQA2CtXhqxBp16ycNqxu5aaMBEgmYyibdOWt1e0c730FrPldVSVztinPCMpWuYrXmrxDMD6tEkf8Q4hRxP8+EgeDnxBbDqAkiZtkH/gZcfprsPuHA/1dzXg7GYyhMwx1GyRuHEjOLLnsR9z5OB0C4MSYb3U=
+    PropagateID: ed38b03a482bb8c9cc01ec95f4dd35e7_60d15cc5b4d711f19285525400638852
+    ReservedCode2: p2JcRn0eG5QBNXJNLJWGTecW656YKZTsalLb8EHJnVR8/MpVu4EEgx4eTmR56fHF67mgCyKRuKTXI0nyvTtrX/r1SLPG3xrb0zL8F5IyC+LRfQruEf6QnzWDRlNnCmsGdQBTouce5duDjNk8qZH8+M5fb1lsNkAXHM0cB69t/rDAk8dI60igsMo6PPM=
 ---
+
+
 
 # NebulaDex 项目开发文档
 
@@ -154,7 +156,7 @@ AIGC:
 | 文件 | 行数 | 说明 |
 |------|------|------|
 | `SDRZipArchive.swift` | 260 | ZIP 解压，inflateWindowed + inflateZlib |
-| `SDRAPKParser.swift` | 100 | APK 元数据解析 |
+| `SDRAPKParser.swift` | 117 | APK 元数据解析（SO 候选按 ABI 排序，全路径 / 裸名双兼容） |
 | `SDRHardeningDetector.swift` | 77 | 加固检测 |
 
 ### 3.9 框架层
@@ -194,6 +196,45 @@ AIGC:
 其中包含异常模型用例（`NebulaDexThrow`：try/catch/finally、隐式 NPE 与数组越界、
 自定义异常父子类型匹配、多 catch 顺序、跨帧传播与 finally 重抛），
 以及 1 条 `expectError: true` 用例（顶层未捕获异常，两侧统一输出 `<ERROR>`）。
+
+### 3.12 Metal 渲染层（阶段四）
+
+`Sources/render/` 共 **2,901 行**（13 文件），承载阶段四渲染管线全链路：
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `SDRRenderTypes.swift` | 366 | 值语义绘制命令、刷新档位（30/60/120Hz）、帧预算与统计模型 |
+| `SDRCommandRecorder.swift` | 221 | 命令录制、批次合并（`SDRVertexBuilder`）、脏区集合 |
+| `SDRRenderDevice.swift` | 139 | 设备与在飞帧同步 |
+| `SDRMetalFormatBridge.swift` | 63 | 像素格式 ↔ `MTLPixelFormat` 桥 |
+| `SDRPipelineCache.swift` | 183 | 管线状态对象缓存与预热 |
+| `SDRTexturePool.swift` | 155 | 纹理池（位图 / 字形图集） |
+| `SDRMetalRenderTarget.swift` | 152 | 绘制目标与清屏 |
+| `SDRShaderSource.swift` | 154 | 内联 MSL 着色器（纯色 / 圆角 / 纹理 / 渐变） |
+| `SDRFrameScheduler.swift` | 279 | 帧调度与档位降级 |
+| `SDRDisplayLinkDriver.swift` | 96 | CADisplayLink 驱动（**唯一依赖 ObjC 运行时的文件**） |
+| `SDRRenderLoop.swift` | 581 | 循环主体：三槽动态顶点缓冲 → 编码 → 提交 |
+| `SDRRenderBridge.swift` | 247 | guest 侧 host-call 桥（矩形 / 位图 / 渐变 / 裁剪栈 / 脏区 / 档位 / 统计） |
+| `SDRMetalRenderView.swift` | 265 | `CAMetalLayer` 承载视图：尺寸同步、前后台节流、内存告警、触控接入 |
+
+**设计要点**：绘制命令值语义（`SDRDrawCommand`）+ 批次合并 + 脏区局部渲染 + PSO 预热 + 三槽顶点缓冲。
+
+**验收口径**：`Sources/render/**` 全量参与 `ios-build.yml` 的渲染层编译校验门禁（`swiftc -typecheck`，出现 `error:` 即失败）。
+
+### 3.13 触控路由（阶段四）
+
+| 文件 | 行数 | 说明 |
+|------|------|------|
+| `SDRTouchRouter.swift` | 358 | UIKit 触点流 → Android `MotionEvent` 流合成（纯 Foundation，可离线验收） |
+
+- **归并**：UIKit 每次回调携带全部触点，本层按 id 维护活动集合，逐点产出 `ACTION_DOWN` / `ACTION_POINTER_DOWN`，`actionIndex` 指向变更指针；
+- **抖动抑制**：主触点位移未越过 touch slop（8 guest 像素）前不派发 `ACTION_MOVE`；
+- **手势识别**：长按 500ms、双击（间隔 ≤ 300ms 且位置容差 ≤ 40 像素）在本层完成判定，guest 侧不再重复计时；
+- **坐标折算**：宿主点 × `contentsScale` 取整，与绘制命令共用同一像素网格；速度按最近 5 个采样点估算，供 fling 使用；
+- **防御**：同时活动触点上限 10 个，超出截断；
+- **投递出口**：`onDispatch` 闭包，JNI 阶段接入前默认仅记录日志，**严禁在此层伪造命中测试结果**。
+
+**验收口径**：`touch-smoke` 20 用例（单指 / 多指 / 抖动抑制 / 长按 / 双击 / 取消 / 触点上限 / 统计 JSON）。
 
 ---
 
@@ -241,6 +282,8 @@ AIGC:
 | `SDRSharedLibrary.swift:103` | 镜像声明但尚未装载的依赖列表待实现 |
 | `SDRSystemServices.swift:622` | 目录枚举返回空，待阶段三接入真实目录后替换 |
 | `SDRElfDynamic.swift:66` | 大端 ELF 动态段解析暂不支持 |
+| `SDRTouchRouter.swift` | 事件出口（`onDispatch`）待 JNI 阶段接入真实 guest 投递，当前默认仅记录日志 |
+| `SDRMetalRenderView.swift` | 渲染层已装配，但 guest 侧尚无真实 Android View 树作为绘制来源 |
 
 ---
 
@@ -295,8 +338,8 @@ ret                           // 按 AAPCS64 返回
 
 | 工作流 | 用途 |
 |--------|------|
-| `ios-build.yml` | 未签名 IPA 构建（macos-26 runner） |
-| `interp-test.yml` | AArch64 解释器冒烟测试 |
+| `ios-build.yml` | 未签名 IPA 构建（macos-26 runner）；渲染层编译校验门禁（`Sources/render/**` 全量 `swiftc -typecheck`，出现 `error:` 即失败） |
+| `interp-test.yml` | AArch64 解释器冒烟测试（含 zip-smoke 13 用例、touch-smoke 20 用例） |
 | `dex-smoke.yml` | DEX 解释器对拍：javac → JVM 期望值；d8 → classes.dex → Swift 解释器，`diff -u` 逐行比对 |
 
 ### 6.2 测试覆盖
@@ -311,6 +354,8 @@ ret                           // 按 AAPCS64 返回
 | 向量全绿 | 16,606+ | 全绿 |
 | dex-smoke | 57 | 待 CI 首跑（JVM / Swift 双端对拍） |
 | settings-smoke | — | 全绿 |
+| zip-smoke | 13 | 全绿（含 SO 装载路径回归） |
+| touch-smoke | 20 | 全绿（阶段四触控路由） |
 
 ### 6.3 静态自检
 
@@ -332,6 +377,7 @@ output/nebula-dex-run/
 │   ├── framework/                # 框架（状态/设置/日志/事件/许可证）
 │   ├── ios-adapter/              # iOS 适配器（syscall/Android桥/实时活动/文件系统）
 │   ├── native-loader/            # Native 装载（解释器/NEON/FPU/调用桥/libc/Android库/ELF）
+│   ├── render/                   # Metal 渲染层 + 触控路由（阶段四）
 │   ├── sandbox/                  # 沙盒（内存防护/预算/地址空间）
 │   ├── tools/                    # 工具（日志/时间/ALU/字节读写/版本/系统探针）
 │   └── ui/                       # UI（主题/根视图/应用列表/日志/设置/关于）
@@ -351,7 +397,7 @@ output/nebula-dex-run/
 | 阶段一 | AArch64 指令集补全（乘法除法、浮点 NEON/VFP、异常与系统调用、性能优化） | ✅ 完成 |
 | 阶段二 | 原生系统库与系统调用层（syscall/最小libc/ELF装载/Android基础库） | ✅ 完成 |
 | 阶段三 | DEX 解释器核心（解析 / 指令 / 堆 / 入口定位） | ✅ 已收口（对拍链路就绪，当前 130 用例） |
-| 阶段四 | Java 运行时与安卓 API 框架、Skia Metal 渲染层、触控与生命周期、性能与体积填充 | 🚧 进行中（浮点族 36 条 + 异常模型已落地，130 用例全绿） |
+| 阶段四 | Java 运行时与安卓 API 框架、Skia Metal 渲染层、触控与生命周期、性能与体积填充 | 🚧 进行中（浮点族 36 条 + 异常模型已落地 130 用例全绿；Metal 渲染层 2,901 行 + 触控路由 358 行已落地，CI 编译门禁与 touch-smoke 就绪） |
 | 阶段五 | 周边能力与稳定性收尾（凭证迁移/签名增强等） | 🚧 待开发 |
 
 ---
@@ -366,4 +412,5 @@ output/nebula-dex-run/
 4. **关键约束**：体积按下限口径（≥ 8 MB 底线、≥ 50 MB 基本、理想 500 MB–1 GB），非越狱、不依赖 JIT
 5. **技术特点**：自定义 syscall 号、trampoline 桩区、软件内存保护、无锁快照
 6. **开发建议**：优先补全 DEX 解释器指令实现（从 const 族开始），然后接入类加载，最后实现 invoke-* 分派
+*（内容由AI生成，仅供参考）*
 *（内容由AI生成，仅供参考）*

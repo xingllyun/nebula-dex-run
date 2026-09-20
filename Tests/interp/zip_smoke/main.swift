@@ -148,5 +148,21 @@ do {
     check(true, "截断输入以抛错方式拒绝，未越界崩溃")
 }
 
+// MARK: - APK 解析器 SO 提取（回归：ABI 目录被重复拼接导致真机 APK_BAD_ZIP）
+
+do {
+    let archive = try SDRZipArchive(bytes: zipBytes)
+    let parser = SDRAPKParser(archive: archive)
+    check(parser.abis == ["arm64-v8a"], "APK 解析器清点出 arm64-v8a 单一 ABI")
+    check((try? parser.extractSo("lib/arm64-v8a/libc++_shared.so", abi: "arm64-v8a")) == elfStub,
+          "全路径 SO 名不再重复拼接 ABI 目录（APK_BAD_ZIP 回归）")
+    check((try? parser.extractSo("libc++_shared.so", abi: "arm64-v8a")) == elfStub,
+          "裸 SO 名按 ABI 目录解析")
+    check((try? parser.extractSo("libc++_shared.so", abi: "armeabi-v7a")) == nil,
+          "未打包的 ABI 裸名返回 nil 而非抛错")
+} catch {
+    check(false, "SO 提取链路异常：\(error)")
+}
+
 print("zip-smoke: \(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }
