@@ -93,6 +93,13 @@ jobs:
           set -euo pipefail
           ./interp-test Tests/interp/vectors_hardening.json
 
+      # 触控回归前置：NEON float/reduce 向量存在 8 例已知标量 pairwise 失败，
+      # 若排在后面会被先中断的步骤跳过，导致阶段四触控链路长期不可见。
+      - name: Run touch routing smoke (stage 4)
+        run: |
+          set -euo pipefail
+          ./touch-smoke
+
       - name: Run NEON integer vectors
         run: |
           set -euo pipefail
@@ -147,11 +154,6 @@ jobs:
         run: |
           set -euo pipefail
           ./android-libs-smoke
-
-      - name: Run touch routing smoke (stage 4)
-        run: |
-          set -euo pipefail
-          ./touch-smoke
 
       - name: Throughput benchmark (informational)
         run: |

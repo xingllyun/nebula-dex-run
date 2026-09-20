@@ -39,7 +39,11 @@ import QuartzCore
 /// （文档附录 A-2 #12 / #13）。
 public struct SDRTouchTuning {
 
-    /// 按下时请求无缓冲分发，降低系统侧事件聚合延迟（附录 A-3 #15）
+    /// 无缓冲分发开关（附录 A-3 #15）。
+    ///
+    /// 注意：`requestUnbufferedDispatch` 是 Android `View` 专有接口，iOS / UIKit 未提供公开等价 API。
+    /// 本开关只作为 guest 侧（JNI 阶段）接线前的语义占位；iOS 侧触摸由系统在事件产生后
+    /// 即时回调 touchesBegan / Moved / Ended，本实现不再做任何额外缓冲或去抖。
     public var unbufferedDispatch = true
     /// 把合并触点作为历史采样补入速度估算，避免快速滑动下的速度突变（附录 A-3 #14）
     public var coalescedSamples = true
@@ -179,10 +183,8 @@ public final class SDRMetalRenderView: UIView {
     private var nextTouchID = 0
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        if touchTuning.unbufferedDispatch, let event = event {
-            // 手指按下即请求无缓冲分发，跳过系统侧的延迟聚合
-            requestUnbufferedDispatch(event)
-        }
+        // iOS 未提供 Android 式的无缓冲分发公开接口（附录 A-3 #15 属 Android 侧语义），
+        // 触摸回调到达即同步路由，不叠加额外缓冲或去抖。
         route(.began, touches: touches, event: event)
     }
 
