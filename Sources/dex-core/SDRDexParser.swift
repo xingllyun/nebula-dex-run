@@ -57,6 +57,26 @@ public struct SDRDexHeader {
 }
 
 /// code_item（方法体）
+/// 单个 catch 目标：`typeDescriptor == nil` 表示 catch-all（finally 合成块）
+public struct SDRDexCatchTarget {
+    public var typeDescriptor: String?
+    public var address: Int
+}
+
+/// 一条 try_item 展开后的异常表条目：指令区间 [startAddr, endAddr) 与全部 catch 目标
+public struct SDRDexTryBlock {
+    public var startAddr: Int
+    public var endAddr: Int
+    public var targets: [SDRDexCatchTarget]
+}
+
+/// 原始 try_item（8 字节：start_addr / insn_count / handler_off）
+public struct SDRDexTryItem {
+    public var startAddr: UInt32
+    public var insnCount: UInt16
+    public var handlerOff: UInt16
+}
+
 public struct SDRDexCodeItem {
     public var registersSize: UInt16
     public var insSize: UInt16
@@ -65,6 +85,8 @@ public struct SDRDexCodeItem {
     public var debugInfoOff: UInt32
     public var insnsSize: UInt32
     public var insns: [UInt16]
+    /// 异常表（阶段四异常模型）：按 try_item 声明顺序展开，供解释器快速匹配
+    public var tries: [SDRDexTryBlock]
 }
 
 public struct SDRDexMethodId {
@@ -321,6 +343,53 @@ public final class SDRDexFile {
 
     public func findMethodIndex(_ signature: String) -> UInt32? { signatureIndex[signature] }
 
+    /// 内建 JDK 类型层次（dex 之外的类型链，异常族为 catch 匹配主力）
+    ///
+    /// 说明：DEX 只携带自身类层次，`java.lang.*` 的类型链需由运行时补齐；
+    /// 未列出的外部类型退化为「仅精确匹配」，不会误伤已实现语义。
+    public static let builtinSuperTypes: [String: String] = [
+        "Ljava/lang/ArithmeticException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/NullPointerException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/ClassCastException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/IllegalStateException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/IllegalArgumentException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/NegativeArraySizeException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/ArrayIndexOutOfBoundsException;": "Ljava/lang/IndexOutOfBoundsException;",
+        "Ljava/lang/IndexOutOfBoundsException;": "Ljava/lang/RuntimeException;",
+        "Ljava/lang/RuntimeException;": "Ljava/lang/Exception;",
+        "Ljava/lang/Exception;": "Ljava/lang/Throwable;",
+        "Ljava/lang/Error;": "Ljava/lang/Throwable;",
+        "Ljava/lang/StackTraceElement;": "Ljava/lang/Object;",
+        "Ljava/lang/String;": "Ljava/lang/Object;",
+        "Ljava/lang/Object;": "",
+    ]
+
+    /// 引用类型可赋值性判定（catch 类型匹配 / instance-of）
+    ///
+    /// 先沿 class_defs 的超类链上行（覆盖 dex 内自定义异常类），命中外部描述符时
+    /// 回落 `builtinSuperTypes` 内建层次；`java.lang.Object` 视为万能父类。
+    /// 接口实现关系不在本方法内展开（阶段四接入 Java 运行时后由其类型系统接管）。
+    public func isAssignable(_ descriptor: String, to target: String) -> Bool {
+        if descriptor == target { return true }
+        if target == "Ljava/lang/Object;" { return true }
+        var current = descriptor
+        var depth = 0
+        while depth < 32 && !current.isEmpty {
+            depth += 1
+            if let def = findClassDef(current) {
+                let superDesc = typeDescriptor(at: def.superclassIdx)
+                if superDesc == current { break }
+                current = superDesc
+            } else if let up = SDRDexFile.builtinSuperTypes[current] {
+                current = up
+            } else {
+                break
+            }
+            if current == target { return true }
+        }
+        return false
+    }
+
     public func findClassDef(_ descriptor: String) -> SDRDexClassDef? {
         guard let i = classIndex[descriptor] else { return nil }
         return classDefs[i]
@@ -364,7 +433,57 @@ public final class SDRDexFile {
         }
         return SDRDexCodeItem(registersSize: regs, insSize: ins, outsSize: outs,
                               triesSize: tries, debugInfoOff: dbg,
-                              insnsSize: size, insns: insns)
+                              insnsSize: size, insns: insns,
+                              tries: parseTryBlocks(off: off, insnsSize: size,
+                                                    triesSize: tries, insns: insns))
+    }
+
+    /// 解析 code_item 尾部的异常表：try_item[] + encoded_catch_handler_list
+    ///
+    /// 布局（官方 `code_item` 定义）：
+    ///   insns[insns_size] → [padding（insns_size 为奇数时 2 字节）] →
+    ///   try_item[tries_size]（8 字节/条）→ encoded_catch_handler_list
+    /// 其中 `handler_off` 是相对 encoded_catch_handler_list 起点的字节偏移。
+    private func parseTryBlocks(off: UInt32, insnsSize: UInt32,
+                                triesSize: UInt16, insns: [UInt16]) -> [SDRDexTryBlock] {
+        guard triesSize > 0 else { return [] }
+        var r = SDRByteReader(data, littleEndian: header.isLittleEndian)
+        let insnsEnd = Int(off) + 16 + Int(insnsSize) * 2
+        r.seek(insnsEnd)
+        if insnsSize % 2 == 1 { _ = r.u16() }                       // 4 字节对齐填充
+        let triesStart = r.offset
+        let handlerListStart = triesStart + Int(triesSize) * 8
+
+        var raw: [SDRDexTryItem] = []
+        raw.reserveCapacity(Int(triesSize))
+        for i in 0..<Int(triesSize) {
+            r.seek(triesStart + i * 8)
+            guard let sa = r.u32(), let ic = r.u16(), let ho = r.u16() else { break }
+            raw.append(SDRDexTryItem(startAddr: sa, insnCount: ic, handlerOff: ho))
+        }
+
+        var blocks: [SDRDexTryBlock] = []
+        blocks.reserveCapacity(raw.count)
+        for item in raw {
+            var hr = SDRByteReader(data, littleEndian: header.isLittleEndian)
+            hr.seek(handlerListStart + Int(item.handlerOff))
+            guard let count = hr.sleb128() else { continue }
+            let typedCount = abs(Int(count))
+            var targets: [SDRDexCatchTarget] = []
+            for _ in 0..<typedCount {
+                guard let typeIdx = hr.uleb128(), let addr = hr.uleb128() else { break }
+                targets.append(SDRDexCatchTarget(typeDescriptor: typeDescriptor(at: typeIdx),
+                                                address: Int(addr)))
+            }
+            if count <= 0, let catchAll = hr.uleb128() {
+                targets.append(SDRDexCatchTarget(typeDescriptor: nil, address: Int(catchAll)))
+            }
+            blocks.append(SDRDexTryBlock(startAddr: Int(item.startAddr),
+                                         endAddr: Int(item.startAddr) + Int(item.insnCount),
+                                         targets: targets))
+        }
+        _ = insns
+        return blocks
     }
 
     public func classData(at off: UInt32) throws -> SDRDexClassData {

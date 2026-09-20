@@ -1,5 +1,5 @@
 {
-  "comment": "dex-smoke 对拍用例：Java 原生输出（DexExpect）与 Swift 解释器输出必须逐行一致；顺序敏感（静态字段会累积），两个驱动必须保持同序",
+  "comment": "dex-smoke 对拍用例：Java 原生输出（DexExpect）与 Swift 解释器输出必须逐行一致；顺序敏感（静态字段会累积），两个驱动必须保持同序；expectError:true 表示该用例期望以 Java 异常终止，两侧均应输出 <ERROR>",
   "cases": [
     { "signature": "LNebulaDexProbe;->c4()I", "args": [] },
     { "signature": "LNebulaDexProbe;->c4neg()I", "args": [] },
@@ -118,6 +118,21 @@
     { "signature": "LNebulaDexFloat;->lessD(DD)I", "args": [4607182418800017408, 4611686018427387904] },
     { "signature": "LNebulaDexFloat;->lessD(DD)I", "args": [9221120237041090560, 4607182418800017408] },
     { "signature": "LNebulaDexFloat;->greaterD(DD)I", "args": [4611686018427387904, 4607182418800017408] },
-    { "signature": "LNebulaDexFloat;->greaterD(DD)I", "args": [4607182418800017408, 9221120237041090560] }
+    { "signature": "LNebulaDexFloat;->greaterD(DD)I", "args": [4607182418800017408, 9221120237041090560] },
+    { "signature": "LNebulaDexThrow;->catchArith(II)I", "args": [9, 3] },
+    { "signature": "LNebulaDexThrow;->catchArith(II)I", "args": [9, 0] },
+    { "signature": "LNebulaDexThrow;->nullArrayLength()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->outOfRange(I)I", "args": [1] },
+    { "signature": "LNebulaDexThrow;->outOfRange(I)I", "args": [5] },
+    { "signature": "LNebulaDexThrow;->catchExact()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->catchSuper()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->catchOrdered()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->finallyNormal()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->finallyOnThrow()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->finallyCount()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->crossFrame()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->catchType()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->crossFrameFinally()I", "args": [] },
+    { "signature": "LNebulaDexThrow;->uncaught()I", "args": [], "expectError": true }
   ]
 }

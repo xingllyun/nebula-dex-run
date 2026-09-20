@@ -18,6 +18,8 @@ struct DexSmokeCaseFile: Decodable {
 struct DexSmokeCase: Decodable {
     let signature: String
     let args: [DexSmokeArgument]
+    /// 期望以 Java 异常终止（未捕获传播到顶层）：该用例期望输出 `<ERROR>` 而非具体值
+    let expectError: Bool?
 }
 
 /// 参数形态：整数（int/long 统一按 64 位承载）或 int[]
@@ -125,11 +127,20 @@ for item in caseFile.cases {
 
     do {
         let result = try interpreter.invokeMethod(item.signature, args: args)
-        print("\(item.signature)=\(result)")
-        passed += 1
+        if item.expectError == true {
+            print("\(item.signature)=<UNEXPECTED:\(result)>")
+            problems.append("\(item.signature) 期望以异常终止，实际正常返回 \(result)")
+        } else {
+            print("\(item.signature)=\(result)")
+            passed += 1
+        }
     } catch {
         print("\(item.signature)=<ERROR>")
-        problems.append("\(item.signature) 执行失败：\(error.localizedDescription)")
+        if item.expectError == true {
+            passed += 1
+        } else {
+            problems.append("\(item.signature) 执行失败：\(error.localizedDescription)")
+        }
     }
 }
 

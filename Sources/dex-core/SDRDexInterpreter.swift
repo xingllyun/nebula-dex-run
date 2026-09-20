@@ -42,6 +42,15 @@ public protocol SDRDexNativeBridge: AnyObject {
 /// 2. 未实现指令（throw 异常模型、invoke-polymorphic、JNI 等）**一律抛 `dexOpUnsupported`**，
 ///    严禁静默跳过或按宽度滑过——静默跳过会让字节码流"看似跑通"却语义全错。
 /// 3. `move-result` 族读取 `result`，语义为「紧随 invoke 的下一条指令」。
+/// 4. 异常指令（throw / move-exception / try-catch-finally）在解释器内以 `SDRDexThrown`
+///    承载：本帧命中异常表则跳转 handler，未命中则向调用帧冒泡，与 JVM 语义一致。
+public struct SDRDexThrown: Error {
+    /// 托管堆中的异常对象句柄（供 move-exception / 重新 throw 使用）
+    public let handle: Int64
+    /// 异常对象类型描述符（供 catch 类型匹配）
+    public let descriptor: String
+}
+
 public final class SDRDexInterpreter {
 
     public struct Frame {
@@ -69,7 +78,71 @@ public final class SDRDexInterpreter {
     /// 最近一次 invoke 的返回值
     public private(set) var result: Int64 = 0
 
+    /// 累计方法调用次数（性能基线口径之一）
+    public private(set) var invokeCount = 0
+
     private var codeOffsetsCache: [UInt32: UInt32]?
+
+    // MARK: - 热路径缓存（阶段四执行优化）
+    //
+    // 解释器的固定开销集中在「按 method_idx 反查签名 / 原型 / 参数类型」与
+    // 「重复解析 code_item」两处，二者都是纯函数映射，可在首次访问后常驻：
+    //   1) methodInfoCache —— 常量池预解析：method_idx → (签名, 参数短名表)
+    //   2) codeCache       —— 方法体缓存：method_idx → (指令流, 寄存器数, 异常表)
+    //   3) fieldKeyCache   —— 静态字段缓存：避免 sget/sput 每轮重拼字段签名
+    //   4) resolvedMethodCache —— 虚方法表索引化：签名 → method_idx 一次解析
+    private var methodInfoCache: [UInt32: (signature: String, paramTypes: [String])] = [:]
+    private var codeCache: [UInt32: (insns: [UInt16], registers: Int,
+                                     insSize: Int, tries: [SDRDexTryBlock])] = [:]
+    private var fieldKeyCache: [UInt32: String] = [:]
+    private var resolvedMethodCache: [String: UInt32] = [:]
+
+    /// 常量池预解析：方法签名与参数短名表（J/D 占两个寄存器槽）
+    private func methodInfo(at idx: UInt32) -> (signature: String, paramTypes: [String]) {
+        if let cached = methodInfoCache[idx] { return cached }
+        guard let dex = file else { return ("?->?(?)V", []) }
+        let signature = dex.methodSignature(at: idx)
+        let info = (signature, SDRDexInterpreter.paramTypes(dex.methodParts(at: idx).proto))
+        methodInfoCache[idx] = info
+        return info
+    }
+
+    /// 方法体预解析缓存（含异常表），命中后不再触碰字节流
+    private func codeBody(at idx: UInt32) throws -> (insns: [UInt16], registers: Int,
+                                                     insSize: Int, tries: [SDRDexTryBlock]) {
+        if let cached = codeCache[idx] { return cached }
+        guard let dex = file,
+              let codeOff = codeOffset(forMethodIndex: idx), codeOff != 0 else {
+            throw SDRAppError(.dexOpUnsupported, "方法无方法体（native/abstract）")
+        }
+        let item = try dex.codeItem(at: codeOff)
+        let body = (item.insns, Int(item.registersSize), Int(item.insSize), item.tries)
+        codeCache[idx] = body
+        return body
+    }
+
+    /// 字段签名缓存（sget/sput 热路径）
+    private func fieldSignature(at idx: UInt32) -> String {
+        if let cached = fieldKeyCache[idx] { return cached }
+        let signature = file?.fieldSignature(at: idx) ?? "?->?:?"
+        fieldKeyCache[idx] = signature
+        return signature
+    }
+
+    /// 热点方法预热（阶段四「热点方法快速路径 / AOT 前置」）：预解析方法体与常量池信息
+    ///
+    /// 宿主在入口方法执行前调用一次，可消除首批调用的解析抖动；
+    /// 对签名不存在或抽象方法静默跳过（不改变后续执行语义）。
+    @discardableResult
+    public func precompile(signatures: [String]) -> Int {
+        var warmed = 0
+        for signature in signatures {
+            guard let idx = file?.findMethodIndex(signature) else { continue }
+            _ = methodInfo(at: idx)
+            if (try? codeBody(at: idx)) != nil { warmed += 1 }
+        }
+        return warmed
+    }
 
     private static let intOps = ["add", "sub", "mul", "div", "rem", "and", "or", "xor", "shl", "shr", "ushr"]
     private static let longOps = ["add", "sub", "mul", "div", "rem", "and", "or", "xor", "shl", "shr", "ushr"]
@@ -104,29 +177,34 @@ public final class SDRDexInterpreter {
     @discardableResult
     public func runMethod(methodIndex: UInt32, args: [Int64] = []) throws -> Int64 {
         guard let dex = file else { throw SDRAppError(.dexOpUnsupported, "解释器未绑定 DEX 文件") }
-        guard let codeOff = codeOffset(forMethodIndex: methodIndex), codeOff != 0 else {
+        let body: (insns: [UInt16], registers: Int, insSize: Int, tries: [SDRDexTryBlock])
+        do {
+            body = try codeBody(at: methodIndex)
+        } catch {
             throw SDRAppError(.dexOpUnsupported,
                               "方法无方法体（native/abstract）：\(dex.methodSignature(at: methodIndex))")
         }
-        let item = try dex.codeItem(at: codeOff)
-        return try run(code: item.insns,
-                       registerCount: Int(item.registersSize),
-                       insSize: Int(item.insSize),
+        invokeCount += 1
+        return try run(code: body.insns,
+                       registerCount: body.registers,
+                       insSize: body.insSize,
                        methodIndex: methodIndex,
-                       callerArgs: args)
+                       callerArgs: args,
+                       tries: body.tries)
     }
 
     /// 执行一段方法体（旧签名兼容：无参数装配）
     @discardableResult
     public func run(code: [UInt16], registerCount: Int, methodIndex: Int = 0) throws -> Int64 {
         try run(code: code, registerCount: registerCount, insSize: 0,
-                methodIndex: UInt32(max(0, methodIndex)), callerArgs: [])
+                methodIndex: UInt32(max(0, methodIndex)), callerArgs: [], tries: [])
     }
 
     /// 执行方法体并装配入参
     @discardableResult
     public func run(code: [UInt16], registerCount: Int, insSize: Int,
-                    methodIndex: UInt32, callerArgs: [Int64]) throws -> Int64 {
+                    methodIndex: UInt32, callerArgs: [Int64],
+                    tries: [SDRDexTryBlock] = []) throws -> Int64 {
         var regs = [Int64](repeating: 0, count: min(max(registerCount, 0), maxRegisters))
         let proto = file?.methodParts(at: methodIndex).proto ?? "()V"
         let types = SDRDexInterpreter.paramTypes(proto)
@@ -143,7 +221,7 @@ public final class SDRDexInterpreter {
         let label = file?.methodSignature(at: methodIndex) ?? "method#\(methodIndex)"
         frames.append(Frame(registers: regs, pc: 0, methodIndex: Int(methodIndex), method: label))
         defer { frames.removeLast() }
-        return try execute(code: code, regs: &regs, methodIndex: methodIndex)
+        return try execute(code: code, regs: &regs, methodIndex: methodIndex, tries: tries)
     }
 
     /// method_idx → code_off（0 表示无方法体）
@@ -189,9 +267,12 @@ public final class SDRDexInterpreter {
 
     // MARK: - 执行核心
 
-    private func execute(code: [UInt16], regs: inout [Int64], methodIndex: UInt32) throws -> Int64 {
+    private func execute(code: [UInt16], regs: inout [Int64], methodIndex: UInt32,
+                         tries: [SDRDexTryBlock] = []) throws -> Int64 {
         let dex = file
         var pc = 0
+        /// 本帧最近一次被捕获的异常句柄，供紧随 handler 首条的 move-exception 读取
+        var capturedException: Int64 = 0
 
         var localSteps = 0
         while pc < code.count {
@@ -221,6 +302,10 @@ public final class SDRDexInterpreter {
             }
             var next = pc + width
 
+            // 指令执行期间的异常统一经本层 do-catch：
+            //   SDRDexThrown —— Java 层异常，先匹配本帧异常表，未命中向调用帧冒泡
+            //   其它 SDRAppError —— 解释器自身错误（未实现指令、步数超限），直接上抛
+            do {
             switch opcode {
 
             // ---- 0x00 nop ----
@@ -249,7 +334,9 @@ public final class SDRDexInterpreter {
             case 0x0C:                                                  // move-result-object
                 wr32(&regs, Int(unit >> 8), result)
             case 0x0D:                                                  // move-exception
-                throw SDRAppError(.dexOpUnsupported, "move-exception 待阶段四异常模型实现 @pc=\(pc)")
+                // 语义：handler 首条指令，取走本帧刚捕获的异常对象（取走后清空）
+                wr32(&regs, Int(unit >> 8), capturedException)
+                capturedException = 0
 
             // ---- 0x0E-0x11 return 族 ----
             case 0x0E:
@@ -305,9 +392,21 @@ public final class SDRDexInterpreter {
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "instance-of 需要 DEX 文件上下文") }
                 let target = dex.typeDescriptor(at: UInt32(u1(code, pc + 1)))
                 let obj = rd32(regs, Int((unit >> 12) & 0x0F))
-                wr32(&regs, Int((unit >> 8) & 0x0F), heap.isInstance(obj, of: target) ? 1 : 0)
+                var hit = obj != 0 ? heap.isInstance(obj, of: target) : false
+                if !hit, obj != 0 {
+                    // 精确类型未命中时沿类层次上行（自定义类父类链 / java.lang 内建链）
+                    if let desc = heap.instanceDescriptor(obj) {
+                        hit = dex.isAssignable(desc, to: target)
+                    } else if let arrayDesc = heap.arrayDescriptor(obj) {
+                        hit = dex.isAssignable(arrayDesc, to: target)
+                    } else if heap.string(at: obj) != nil {
+                        hit = dex.isAssignable("Ljava/lang/String;", to: target)
+                    }
+                }
+                wr32(&regs, Int((unit >> 8) & 0x0F), hit ? 1 : 0)
             case 0x21:                                                  // array-length (12x)
                 let handle = rd32(regs, Int((unit >> 12) & 0x0F))
+                if handle == 0 { throw raise("Ljava/lang/NullPointerException;") }
                 wr32(&regs, Int((unit >> 8) & 0x0F), Int64(heap.arrayLength(handle)))
 
             // ---- 0x22-0x23 分配 ----
@@ -319,6 +418,7 @@ public final class SDRDexInterpreter {
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "new-array 需要 DEX 文件上下文") }
                 let desc = dex.typeDescriptor(at: UInt32(u1(code, pc + 1)))
                 let length = Int(rd32(regs, Int((unit >> 12) & 0x0F)))
+                if length < 0 { throw raise("Ljava/lang/NegativeArraySizeException;") }
                 wr32(&regs, Int((unit >> 8) & 0x0F), heap.newArray(descriptor: desc, length: length))
 
             // ---- 0x24-0x25 filled-new-array ----
@@ -369,9 +469,12 @@ public final class SDRDexInterpreter {
                     heap.setElement(handle, i, value)
                 }
 
-            // ---- 0x27 throw（阶段四）----
+            // ---- 0x27 throw ----
             case 0x27:
-                throw SDRAppError(.dexOpUnsupported, "throw 待阶段四异常模型实现 @pc=\(pc)")
+                let thrownObj = rd32(regs, Int(unit >> 8))
+                if thrownObj == 0 { throw raise("Ljava/lang/NullPointerException;") }
+                let thrownDesc = heap.instanceDescriptor(thrownObj) ?? "Ljava/lang/Throwable;"
+                throw SDRDexThrown(handle: thrownObj, descriptor: thrownDesc)
 
             // ---- 0x28-0x2A 无条件跳转 ----
             case 0x28:                                                  // goto（10t，相对当前 pc）
@@ -456,7 +559,7 @@ public final class SDRDexInterpreter {
                 let a = Int((unit >> 8) & 0x0F)
                 let arr = rd32(regs, Int(u1(code, pc + 1) & 0xFF))
                 let idx = Int(rd32(regs, Int(u1(code, pc + 1) >> 8)))
-                let raw = heap.element(arr, idx)
+                let raw = try arrayElement(arr, idx)
                 switch opcode {
                 case 0x47: wr32(&regs, a, raw & 1)                          // aget-boolean
                 case 0x48: wr32(&regs, a, s8(raw))                          // aget-byte
@@ -480,12 +583,12 @@ public final class SDRDexInterpreter {
                 case 0x4C: value = rdW(regs, a)                             // aput-wide
                 default: value = rd32(regs, a)                              // aput / aput-object
                 }
-                heap.setElement(arr, idx, value)
+                try setArrayElement(arr, idx, value)
 
             // ---- 0x52-0x58 iget 族 ----
             case 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58:
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "iget 需要 DEX 文件上下文") }
-                let key = SDRDexInterpreter.fieldKey(dex.fieldSignature(at: UInt32(u1(code, pc + 1))))
+                let key = SDRDexInterpreter.fieldKey(fieldSignature(at: UInt32(u1(code, pc + 1))))
                 let obj = rd32(regs, Int((unit >> 12) & 0x0F))
                 let raw = heap.field(obj, key)
                 switch opcode {
@@ -500,7 +603,7 @@ public final class SDRDexInterpreter {
             // ---- 0x59-0x5F iput 族 ----
             case 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F:
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "iput 需要 DEX 文件上下文") }
-                let key = SDRDexInterpreter.fieldKey(dex.fieldSignature(at: UInt32(u1(code, pc + 1))))
+                let key = SDRDexInterpreter.fieldKey(fieldSignature(at: UInt32(u1(code, pc + 1))))
                 let obj = rd32(regs, Int((unit >> 12) & 0x0F))
                 let value: Int64
                 switch opcode {
@@ -516,7 +619,7 @@ public final class SDRDexInterpreter {
             // ---- 0x60-0x66 sget 族 ----
             case 0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66:
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "sget 需要 DEX 文件上下文") }
-                let sig = dex.fieldSignature(at: UInt32(u1(code, pc + 1)))
+                let sig = fieldSignature(at: UInt32(u1(code, pc + 1)))
                 let raw = staticFields[sig] ?? 0
                 switch opcode {
                 case 0x63: wr32(&regs, Int(unit >> 8), raw & 1)
@@ -530,7 +633,7 @@ public final class SDRDexInterpreter {
             // ---- 0x67-0x6D sput 族 ----
             case 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D:
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "sput 需要 DEX 文件上下文") }
-                let sig = dex.fieldSignature(at: UInt32(u1(code, pc + 1)))
+                let sig = fieldSignature(at: UInt32(u1(code, pc + 1)))
                 let value: Int64
                 switch opcode {
                 case 0x6A: value = rd32(regs, Int(unit >> 8)) & 1
@@ -544,10 +647,12 @@ public final class SDRDexInterpreter {
 
             // ---- 0x6E-0x78 invoke 族 ----
             case 0x6E, 0x6F, 0x70, 0x71, 0x72, 0x74, 0x75, 0x76, 0x77, 0x78:
-                guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "invoke 需要 DEX 文件上下文") }
+                guard dex != nil else { throw SDRAppError(.dexOpUnsupported, "invoke 需要 DEX 文件上下文") }
                 let methodIdx = UInt32(u1(code, pc + 1))
-                let signature = dex.methodSignature(at: methodIdx)
-                let types = SDRDexInterpreter.paramTypes(dex.methodParts(at: methodIdx).proto)
+                // 常量池预解析缓存：method_idx →（签名, 参数短名表），避免每轮 invoke 重解析
+                let info = methodInfo(at: methodIdx)
+                let signature = info.signature
+                let types = info.paramTypes
                 var args: [Int64] = []
                 if opcode >= 0x74 {
                     let count = Int(unit >> 8)
@@ -693,14 +798,25 @@ public final class SDRDexInterpreter {
                 let value = try intBinary(Self.intOps[opcode - 0xD8], b, lit)
                 wr32(&regs, a, value)
 
-            // ---- 0xFA-0xFD invoke-polymorphic / invoke-custom（阶段四）----
+            // ---- 0xFA-0xFD invoke-polymorphic / invoke-custom（显式留到阶段五）----
             case 0xFA, 0xFB, 0xFC, 0xFD:
                 throw SDRAppError(.dexOpUnsupported,
-                                  "\(SDRDexOpcode.name(opcode: opcode)) 待阶段四实现 @pc=\(pc)")
+                                  "\(SDRDexOpcode.name(opcode: opcode)) 待阶段五实现 @pc=\(pc)")
 
             default:
                 throw SDRAppError(.dexOpUnsupported,
                                   "未实现指令 \(SDRDexOpcode.name(opcode: opcode))（格式 \(SDRDexOpcode.format(opcode: opcode))）@pc=\(pc)")
+            }
+
+            } catch let thrown as SDRDexThrown {
+                // 异常表快速匹配：命中则跳转 handler，并把异常对象交给 move-exception；
+                // 未命中则原样向调用帧冒泡（跨帧传播由上层 do-catch 继续匹配）。
+                if let handler = handlerAddress(throwPC: pc, thrown: thrown, tries: tries) {
+                    capturedException = thrown.handle
+                    pc = handler
+                    continue
+                }
+                throw thrown
             }
 
             pc = next
@@ -718,7 +834,71 @@ public final class SDRDexInterpreter {
         }
         if let native = natives[signature] { return try native(args) }
         if let bridge = bridge { return try bridge.invoke(signature: signature, args: args) }
+        // 常用 JDK 小方法内联（阶段四执行优化）：java.lang 方法在 dex 中无方法体，
+        // 宿主尚未接入 Java 运行时前，以结果等价的最简实现兜底。
+        if let inlined = inlinedJdkMethod(signature: signature, args: args) { return inlined }
         throw SDRAppError(.dexOpUnsupported, "外部方法无实现：\(signature)")
+    }
+
+    /// 常用 JDK 小方法内联表（内联缓存）
+    ///
+    /// - 构造器：对象已由 `new-instance` 分配，`<init>` 只完成字段初始化，返回 0 即可；
+    /// - `String.length()I`：直接读托管堆字符串长度。
+    /// 返回 nil 表示未命中，由上层继续报「外部方法无实现」（绝不静默返回 0）。
+    private func inlinedJdkMethod(signature: String, args: [Int64]) -> Int64? {
+        let constructors = ["-><init>()V", "-><init>(Ljava/lang/String;)V", "-><init>(I)V",
+                            "-><init>(J)V", "-><init>(Ljava/lang/Object;)V"]
+        for suffix in constructors where signature.hasSuffix(suffix) { return 0 }
+        if signature.hasSuffix("->length()I"),
+           let recv = args.first, let text = heap.string(at: recv) {
+            return Int64(text.utf16.count)
+        }
+        return nil
+    }
+
+    // MARK: - 异常支持
+
+    /// 构造并抛出 Java 异常（句柄落在托管堆，供 move-exception / 再次 throw 使用）
+    private func raise(_ descriptor: String) -> SDRDexThrown {
+        SDRDexThrown(handle: heap.newInstance(descriptor: descriptor), descriptor: descriptor)
+    }
+
+    /// 异常表快速匹配：抛点落在 try_item 区间内，按声明顺序取首个可赋值 catch，catch-all 兜底
+    private func handlerAddress(throwPC: Int, thrown: SDRDexThrown,
+                                tries: [SDRDexTryBlock]) -> Int? {
+        for block in tries where throwPC >= block.startAddr && throwPC < block.endAddr {
+            for target in block.targets {
+                guard let type = target.typeDescriptor else { return target.address }
+                if isAssignable(thrown.descriptor, to: type) { return target.address }
+            }
+        }
+        return nil
+    }
+
+    /// catch 类型可赋值判定：有 DEX 上下文走类层次，否则退化为精确匹配
+    private func isAssignable(_ descriptor: String, to target: String) -> Bool {
+        if let dex = file { return dex.isAssignable(descriptor, to: target) }
+        return descriptor == target
+    }
+
+    /// 数组读（Java 语义：null → NPE；越界 → ArrayIndexOutOfBoundsException）
+    private func arrayElement(_ handle: Int64, _ index: Int) throws -> Int64 {
+        if handle == 0 { throw raise("Ljava/lang/NullPointerException;") }
+        let length = heap.arrayLength(handle)
+        if index < 0 || index >= length {
+            throw raise("Ljava/lang/ArrayIndexOutOfBoundsException;")
+        }
+        return heap.element(handle, index)
+    }
+
+    /// 数组写（前置检查与 arrayElement 一致）
+    private func setArrayElement(_ handle: Int64, _ index: Int, _ value: Int64) throws {
+        if handle == 0 { throw raise("Ljava/lang/NullPointerException;") }
+        let length = heap.arrayLength(handle)
+        if index < 0 || index >= length {
+            throw raise("Ljava/lang/ArrayIndexOutOfBoundsException;")
+        }
+        heap.setElement(handle, index, value)
     }
 
     // MARK: - 运算语义
@@ -764,27 +944,27 @@ public final class SDRDexInterpreter {
         }
     }
 
-    /// div-int 溢出（Int32.min / -1）按 JVM 语义回绕，除零抛错（阶段四接 ArithmeticException）
+    /// div-int 溢出（Int32.min / -1）按 JVM 语义回绕；除零抛 ArithmeticException（异常模型接管）
     private func intDiv(_ x: Int64, _ y: Int64) throws -> Int64 {
-        if y == 0 { throw SDRAppError(.dexOpUnsupported, "div-int 除数为 0") }
+        if y == 0 { throw raise("Ljava/lang/ArithmeticException;") }        // Java 语义：整数除零
         if x == Int64(Int32.min) && y == -1 { return Int64(Int32.min) }
         return s32(x / y)
     }
 
     private func intRem(_ x: Int64, _ y: Int64) throws -> Int64 {
-        if y == 0 { throw SDRAppError(.dexOpUnsupported, "rem-int 除数为 0") }
+        if y == 0 { throw raise("Ljava/lang/ArithmeticException;") }
         if x == Int64(Int32.min) && y == -1 { return 0 }
         return s32(x % y)
     }
 
     private func longDiv(_ x: Int64, _ y: Int64) throws -> Int64 {
-        if y == 0 { throw SDRAppError(.dexOpUnsupported, "div-long 除数为 0") }
+        if y == 0 { throw raise("Ljava/lang/ArithmeticException;") }
         if x == Int64.min && y == -1 { return Int64.min }
         return x / y
     }
 
     private func longRem(_ x: Int64, _ y: Int64) throws -> Int64 {
-        if y == 0 { throw SDRAppError(.dexOpUnsupported, "rem-long 除数为 0") }
+        if y == 0 { throw raise("Ljava/lang/ArithmeticException;") }
         if x == Int64.min && y == -1 { return 0 }
         return x % y
     }

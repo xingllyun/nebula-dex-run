@@ -151,5 +151,28 @@ public class DexExpect {
         p("LNebulaDexFloat;->lessD(DD)I", (long) (NebulaDexFloat.lessD(Double.longBitsToDouble(9221120237041090560L), Double.longBitsToDouble(4607182418800017408L))));
         p("LNebulaDexFloat;->greaterD(DD)I", (long) (NebulaDexFloat.greaterD(Double.longBitsToDouble(4611686018427387904L), Double.longBitsToDouble(4607182418800017408L))));
         p("LNebulaDexFloat;->greaterD(DD)I", (long) (NebulaDexFloat.greaterD(Double.longBitsToDouble(4607182418800017408L), Double.longBitsToDouble(9221120237041090560L))));
+
+        // ---------- NebulaDexThrow：异常模型（try / catch / finally / 跨帧） ----------
+        p("LNebulaDexThrow;->catchArith(II)I", NebulaDexThrow.catchArith(9, 3));
+        p("LNebulaDexThrow;->catchArith(II)I", NebulaDexThrow.catchArith(9, 0));
+        p("LNebulaDexThrow;->nullArrayLength()I", NebulaDexThrow.nullArrayLength());
+        p("LNebulaDexThrow;->outOfRange(I)I", NebulaDexThrow.outOfRange(1));
+        p("LNebulaDexThrow;->outOfRange(I)I", NebulaDexThrow.outOfRange(5));
+        p("LNebulaDexThrow;->catchExact()I", NebulaDexThrow.catchExact());
+        p("LNebulaDexThrow;->catchSuper()I", NebulaDexThrow.catchSuper());
+        p("LNebulaDexThrow;->catchOrdered()I", NebulaDexThrow.catchOrdered());
+        p("LNebulaDexThrow;->finallyNormal()I", NebulaDexThrow.finallyNormal());
+        p("LNebulaDexThrow;->finallyOnThrow()I", NebulaDexThrow.finallyOnThrow());
+        p("LNebulaDexThrow;->finallyCount()I", NebulaDexThrow.finallyCount());
+        p("LNebulaDexThrow;->crossFrame()I", NebulaDexThrow.crossFrame());
+        p("LNebulaDexThrow;->catchType()I", NebulaDexThrow.catchType());
+        p("LNebulaDexThrow;->crossFrameFinally()I", NebulaDexThrow.crossFrameFinally());
+
+        // 顶层未捕获：JVM 侧同样以异常终止，期望行固定为 <ERROR>（与解释器 expectError 口径一致）
+        try {
+            p("LNebulaDexThrow;->uncaught()I", NebulaDexThrow.uncaught());
+        } catch (Throwable t) {
+            System.out.println("LNebulaDexThrow;->uncaught()I=<ERROR>");
+        }
     }
 }

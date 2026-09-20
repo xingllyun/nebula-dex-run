@@ -113,6 +113,12 @@ public final class SDRDexHeap {
         return obj.descriptor
     }
 
+    /// 数组句柄 → 数组描述符（"[[I" / "[Ljava/lang/String;" 等）
+    public func arrayDescriptor(_ handle: Int64) -> String? {
+        guard let obj = arrays[safe: index(of: handle, tag: SDRDexHeap.arrayTag)] else { return nil }
+        return obj.descriptor
+    }
+
     public func field(_ handle: Int64, _ key: String) -> Int64 {
         guard let obj = instances[safe: index(of: handle, tag: SDRDexHeap.instanceTag)] else { return 0 }
         return obj.fields[key] ?? 0

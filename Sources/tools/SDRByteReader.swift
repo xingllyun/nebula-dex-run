@@ -104,6 +104,28 @@ public struct SDRByteReader {
         }
         return result
     }
+
+    /// DEX 专用的 SLEB128（有符号变长整数）
+    ///
+    /// 用于 `encoded_catch_handler` 的 size 字段：正数表示 catch 类型个数，
+    /// 负数表示「存在 catch-all 且类型个数为绝对值」，0 表示仅 catch-all。
+    public mutating func sleb128() -> Int32? {
+        var result: Int32 = 0
+        var shift: Int32 = 0
+        var byte: UInt8 = 0
+        while true {
+            guard let b = u8() else { return nil }
+            byte = b
+            result |= Int32(b & 0x7F) << shift
+            shift += 7
+            if byte & 0x80 == 0 { break }
+            if shift > 28 { return nil }
+        }
+        if shift < 32 && (byte & 0x40) != 0 {
+            result |= Int32(bitPattern: ~0) << shift
+        }
+        return result
+    }
 }
 
 public enum SDRByteOrder {
