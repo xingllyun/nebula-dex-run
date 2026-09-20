@@ -138,7 +138,7 @@ public final class SDRDexFile {
     /// 类描述符（"Lcls;"）→ class_defs 下标
     public private(set) lazy var classIndex: [String: Int] = {
         var map: [String: Int] = [:]
-        for (i, def) in classDefs.enumerated() { map[type(at: def.classIdx)] = i }
+        for (i, def) in classDefs.enumerated() { map[typeDescriptor(at: def.classIdx)] = i }
         return map
     }()
 

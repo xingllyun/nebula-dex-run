@@ -94,13 +94,13 @@ public final class SDRDexHeap {
     }
 
     public func element(_ handle: Int64, _ index: Int) -> Int64 {
-        guard let obj = arrays[safe: index(of: handle, tag: SDRDexHeap.arrayTag)],
+        guard let obj = arrays[safe: self.index(of: handle, tag: SDRDexHeap.arrayTag)],
               index >= 0, index < obj.length else { return 0 }
         return obj.slots[index]
     }
 
     public func setElement(_ handle: Int64, _ index: Int, _ value: Int64) {
-        let i = index(of: handle, tag: SDRDexHeap.arrayTag)
+        let i = self.index(of: handle, tag: SDRDexHeap.arrayTag)
         guard i >= 0 && i < arrays.count, index >= 0, index < arrays[i].length else { return }
         arrays[i].slots[index] = value
     }
