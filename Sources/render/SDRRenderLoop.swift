@@ -363,7 +363,15 @@ public final class SDRRenderLoop {
 
     // MARK: - 帧渲染
 
+    /// 帧回调入口：整帧包 @autoreleasepool，避免帧内临时 Objective-C 对象跨帧堆积
+    /// （文档 §3.3 附录 A-2 #5 渲染循环内存管理规范）。
     private func renderFrame(_ tick: SDRVSyncTick) {
+        autoreleasepool {
+            renderFrameBody(tick)
+        }
+    }
+
+    private func renderFrameBody(_ tick: SDRVSyncTick) {
         stateLock.lock()
         let renderTarget = target
         let cache = pipelineCache

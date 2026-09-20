@@ -31,6 +31,26 @@ import Foundation
 import UIKit
 import QuartzCore
 
+/// 触控链路调节项（文档 §4.1–§4.4）。
+///
+/// 说明：本视图不是 UIScrollView，不存在 delaysContentTouches 默认约 150ms 的
+/// 滑动意图判定延迟；后续若在渲染视图外引入滚动容器，必须显式设置
+/// `delaysContentTouches = false` 与 `canCancelContentTouches = true`
+/// （文档附录 A-2 #12 / #13）。
+public struct SDRTouchTuning {
+
+    /// 按下时请求无缓冲分发，降低系统侧事件聚合延迟（附录 A-3 #15）
+    public var unbufferedDispatch = true
+    /// 把合并触点作为历史采样补入速度估算，避免快速滑动下的速度突变（附录 A-3 #14）
+    public var coalescedSamples = true
+    /// 单次主线程触控处理告警阈值（毫秒，对齐单帧触控预算）
+    public var mainThreadWarnMillis: Double = 60
+    /// 主线程停滞红线（毫秒，对齐 ANR 5 秒红线自检）
+    public var mainThreadAnrMillis: Double = 5000
+
+    public init() {}
+}
+
 /// 宿主侧承载视图：CAMetalLayer 上屏容器（阶段四 §4.1 渲染管线最上层）。
 ///
 /// guest 的 Android View 树不在这里解释——它由 guest 侧布局后经 SDRRenderBridge
@@ -152,10 +172,17 @@ public final class SDRMetalRenderView: UIView {
     /// guest 侧 Java 投递（JNI 阶段）接入前，默认出口仅记录日志，不做任何命中测试。
     public let touchRouter = SDRTouchRouter()
 
+    /// 触控链路调节项（无缓冲分发 / 合并触点 / 主线程红线）
+    public var touchTuning = SDRTouchTuning()
+
     private var touchIdentifiers: [ObjectIdentifier: Int] = [:]
     private var nextTouchID = 0
 
     public override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if touchTuning.unbufferedDispatch, let event = event {
+            // 手指按下即请求无缓冲分发，跳过系统侧的延迟聚合
+            requestUnbufferedDispatch(event)
+        }
         route(.began, touches: touches, event: event)
     }
 
@@ -172,7 +199,14 @@ public final class SDRMetalRenderView: UIView {
     }
 
     private func route(_ phase: SDRTouchPhase, touches: Set<UITouch>, event: UIEvent?) {
+        let started = CACurrentMediaTime()
+        defer { recordMainThreadCost(since: started) }
+
         let contacts = touches.map { contact(for: $0) }
+        if touchTuning.coalescedSamples, phase == .moved, let event = event {
+            // 合并触点批处理：把一帧内的历史采样补入速度估算
+            ingestCoalescedTouches(touches, event: event)
+        }
         if phase == .ended || phase == .cancelled {
             // 触点 id 随手指抬起释放，避免长会话下映射表无限增长
             for touch in touches {
@@ -199,6 +233,37 @@ public final class SDRMetalRenderView: UIView {
                                x: Double(point.x),
                                y: Double(point.y),
                                pressure: Double(touch.force))
+    }
+
+    /// 合并触点批处理：UIKit 将一帧内的多次采样合并后投递，历史坐标补入速度估算，
+    /// 避免快速滑动下速度估算偏低（文档 §4.2 / 附录 A-3 #14）。
+    private func ingestCoalescedTouches(_ touches: Set<UITouch>, event: UIEvent) {
+        var samples: [SDRTouchContact] = []
+        for touch in touches {
+            // 历史采样复用当前触点 id，但不注册新的映射，避免污染触点表
+            guard let id = touchIdentifiers[ObjectIdentifier(touch)],
+                  let history = event.coalescedTouches(for: touch) else { continue }
+            for past in history {
+                let point = past.location(in: self)
+                samples.append(SDRTouchContact(id: id,
+                                               x: Double(point.x),
+                                               y: Double(point.y),
+                                               pressure: Double(past.force)))
+            }
+        }
+        guard samples.count > 1 else { return }
+        touchRouter.ingestHistoricalSamples(samples, timestampMillis: event.timestamp * 1000.0)
+    }
+
+    /// 主线程触控处理耗时自检：对齐 Android「5 秒不响应输入即 ANR」红线（文档 §4.4）
+    private func recordMainThreadCost(since started: CFTimeInterval) {
+        let millis = (CACurrentMediaTime() - started) * 1000.0
+        if millis >= touchTuning.mainThreadAnrMillis {
+            SDRLogger.e("render", "触控分发主线程耗时 \(Int(millis))ms，已达 ANR 红线（文档 §4.4）")
+        } else if millis >= touchTuning.mainThreadWarnMillis {
+            SDRLogger.w("render", "触控分发主线程耗时 \(Int(millis))ms，超出单帧触控预算")
+        }
+        touchRouter.recordMainThreadCost(millis)
     }
 
     /// 事件时间戳（毫秒）：优先取 UIEvent，回落 CADisplayLink 同时基

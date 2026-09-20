@@ -116,6 +116,12 @@ public final class SDRTouchRouter {
     public static let touchSlop: Double = 8.0
     /// 长按判定阈值（毫秒）
     public static let longPressMillis: Double = 500.0
+
+    /// 主线程单次处理告警阈值（毫秒，对齐单帧触控预算 60ms）
+    public static let mainThreadWarnMillis: Double = 60.0
+
+    /// 合并触点回推的时间窗（毫秒）：UIKit 单帧聚合窗口约 1 个刷新周期
+    public static let coalescedWindowMillis: Double = 16.0
     /// 双击间隔上限（毫秒）
     public static let doubleTapMillis: Double = 300.0
     /// 双击位置容差（guest 像素）
@@ -147,6 +153,9 @@ public final class SDRTouchRouter {
     // MARK: - 状态
 
     public private(set) var stats = SDRTouchStats()
+
+    /// 主线程单次触控处理耗时峰值（毫秒）：用于自检 Android ANR 5 秒红线（文档 §4.4）
+    public private(set) var mainThreadStallMillis: Double = 0
 
     private var active: [Int: SDRTouchContact] = [:]
     /// 触点 id 的按下顺序，保证 actionIndex 稳定
@@ -212,6 +221,31 @@ public final class SDRTouchRouter {
         lastTapMillis = nil
         lastTapContact = nil
         velocitySamples.removeAll(keepingCapacity: true)
+    }
+
+    /// 登记一次主线程处理耗时并更新峰值，返回是否越过告警阈值
+    @discardableResult
+    public func recordMainThreadCost(_ millis: Double) -> Bool {
+        mainThreadStallMillis = max(mainThreadStallMillis, millis)
+        return millis >= SDRTouchRouter.mainThreadWarnMillis
+    }
+
+    /// 历史（合并）触点批量投喂：仅补速度样本，不产生 MotionEvent（文档 §4.2 历史事件批处理）。
+    ///
+    /// UIKit 会把一个刷新周期内的多次采样合并投递，直接用合并后坐标估算速度会在快速滑动时偏低；
+    /// 这里把窗口内采样按等间隔回推时间戳，得到与逐点采样一致的估算口径。
+    public func ingestHistoricalSamples(_ samples: [SDRTouchContact], timestampMillis: Double) {
+        guard samples.count > 1 else { return }
+        let span = SDRTouchRouter.coalescedWindowMillis
+        let step = span / Double(max(samples.count - 1, 1))
+        for (index, sample) in samples.enumerated() {
+            let scaled = SDRTouchContact(id: sample.id,
+                                         x: (sample.x * contentsScale).rounded(),
+                                         y: (sample.y * contentsScale).rounded(),
+                                         pressure: min(max(sample.pressure, 0), 1))
+            recordVelocitySample(scaled,
+                                 timestampMillis: timestampMillis - span + step * Double(index))
+        }
     }
 
     public func statisticsSnapshot() -> SDRTouchStats { stats }

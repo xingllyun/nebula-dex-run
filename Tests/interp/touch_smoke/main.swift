@@ -125,5 +125,26 @@ limitRouter.handle(phase: .began, contacts: (0..<15).map { c($0, Double($0), 0) 
 check(limitRouter.statisticsSnapshot().maxPointerCount == SDRTouchRouter.maxContacts,
       "超量触点按上限 \(SDRTouchRouter.maxContacts) 截断")
 
+// MARK: - 合并触点历史采样（文档 §4.2）
+
+let coalescedRouter = SDRTouchRouter(contentsScale: 1.0)
+coalescedRouter.handle(phase: .began, contacts: [c(0, 0, 0)], timestampMillis: 7000)
+coalescedRouter.handle(phase: .moved, contacts: [c(0, 40, 0)], timestampMillis: 7016)
+coalescedRouter.ingestHistoricalSamples([c(0, 40, 0), c(0, 40, 0), c(0, 40, 0)], timestampMillis: 7016)
+check(coalescedRouter.velocity.x > 0, "合并触点历史采样补入速度估算")
+
+let dispatchedBeforeSamples = coalescedRouter.statisticsSnapshot().dispatched
+coalescedRouter.ingestHistoricalSamples([c(0, 44, 0)], timestampMillis: 7032)
+check(coalescedRouter.statisticsSnapshot().dispatched == dispatchedBeforeSamples,
+      "历史采样不产生新的 MotionEvent")
+
+// MARK: - 主线程触控红线自检（文档 §4.4）
+
+let stallRouter = SDRTouchRouter(contentsScale: 1.0)
+check(stallRouter.recordMainThreadCost(12) == false, "12ms 未越触控告警阈值")
+check(stallRouter.recordMainThreadCost(120) == true, "120ms 越过触控告警阈值")
+check(abs(stallRouter.mainThreadStallMillis - 120) < 0.001, "主线程耗时峰值按最大值保留")
+check(stallRouter.recordMainThreadCost(5200) == true, "5.2s 命中 ANR 红线判定")
+
 print("touch-smoke: \(passed) passed, \(failed) failed")
 if failed > 0 { exit(1) }

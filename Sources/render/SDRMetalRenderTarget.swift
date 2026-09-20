@@ -85,7 +85,12 @@ public final class SDRMetalRenderTarget {
     }
 
     /// 组装一帧的 render pass：清屏 + 可选 MSAA resolve 到 drawable
-    public func makePass(clearColor: SDRColor) throws -> (descriptor: MTLRenderPassDescriptor, drawable: CAMetalDrawable) {
+    ///
+    /// - Parameter retainContents: 上屏目标传 true（最终 attachment 必须 store）；
+    ///   中间 / 离屏渲染目标传 false，load/store 均走 dontCare，
+    ///   避免 tile memory 与系统内存的往返带宽（文档 §3.3 附录 A-2 #2）。
+    public func makePass(clearColor: SDRColor,
+                         retainContents: Bool = true) throws -> (descriptor: MTLRenderPassDescriptor, drawable: CAMetalDrawable) {
         guard let drawable = layer.nextDrawable() else {
             drawableAcquireFailures += 1
             throw SDRRenderError.drawableUnavailable
