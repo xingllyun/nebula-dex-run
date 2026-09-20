@@ -166,7 +166,8 @@ public final class SDRRenderBridge {
                                                                   width: width, height: height,
                                                                   mipmapped: false)
         descriptor.usage = .shaderRead
-        descriptor.storageMode = .managed
+        // iOS 无 .managed（仅 macOS）：位图上传需 CPU 可见，走 .shared
+        descriptor.storageMode = .shared
         guard let texture = device.makeTexture(descriptor: descriptor) else { return false }
 
         texture.replace(region: MTLRegion(origin: MTLOrigin(x: 0, y: 0, z: 0),
