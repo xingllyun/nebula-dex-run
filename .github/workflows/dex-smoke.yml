@@ -1,0 +1,151 @@
+# Copyright © 2026 星云云络科技 | NebulaDex 项目 | 基于 MIT 开源协议发布
+# Copyright © 2026 Xingyun Cloud Tech | NebulaDex Project | Released under the MIT License
+#
+# 阶段四验收（第一优先级）：DEX 解释器全量闭环对拍
+#   javac 编译 Java 样本 → JVM 原生执行输出期望值
+#   d8 编译同一批 class 为 classes.dex → Swift 解释器执行 → 逐行 diff
+# 不依赖 iOS 模拟器与签名，直接在 macOS runner 上以命令行方式完成。
+
+name: DEX Smoke
+
+on:
+  push:
+    branches: [ main, "trae/**" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dex-smoke:
+    runs-on: macos-26
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          swift --version
+          sw_vers
+
+      - name: Prepare JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Resolve d8 (Android build-tools first, r8 jar fallback)
+        run: |
+          set -euo pipefail
+          mkdir -p build/tools
+          D8=""
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+          if [ -n "$SDK" ] && [ -d "$SDK/build-tools" ]; then
+            BT="$(ls -d "$SDK"/build-tools/* 2>/dev/null | sort -V | tail -1 || true)"
+            if [ -n "$BT" ] && [ -x "$BT/d8" ]; then D8="$BT/d8"; fi
+          fi
+          if [ -z "$D8" ] && command -v d8 >/dev/null 2>&1; then D8="$(command -v d8)"; fi
+          if [ -z "$D8" ]; then
+            R8_VERSION="8.3.37"
+            OK=""
+            for URL in \
+              "https://maven.google.com/com/android/tools/r8/${R8_VERSION}/r8-${R8_VERSION}.jar" \
+              "https://repo1.maven.org/maven2/com/android/tools/r8/${R8_VERSION}/r8-${R8_VERSION}.jar"; do
+              if curl -fsSL -o build/tools/r8.jar "$URL"; then OK="yes"; break; fi
+            done
+            if [ -z "$OK" ]; then
+              echo "::error::d8 不可用：既无 Android build-tools，也无法下载 r8 jar"
+              exit 1
+            fi
+            cat > build/tools/d8 <<EOF
+          #!/bin/sh
+          exec java -cp "$PWD/build/tools/r8.jar" com.android.tools.r8.D8 "\$@"
+          EOF
+            chmod +x build/tools/d8
+            D8="$PWD/build/tools/d8"
+          fi
+          echo "D8=$D8" >> "$GITHUB_ENV"
+          "$D8" --version || true
+
+      - name: Compile Java samples and expectation driver
+        run: |
+          set -euo pipefail
+          mkdir -p build/dex-classes build/dex-out
+          javac --release 8 -d build/dex-classes Tests/dex/src/*.java
+
+      - name: Emit expected values on JVM
+        run: |
+          set -euo pipefail
+          java -cp build/dex-classes DexExpect > build/expect.txt
+          echo "期望值行数：$(wc -l < build/expect.txt)"
+
+      - name: Assemble classes.dex by d8
+        run: |
+          set -euo pipefail
+          "$D8" --min-api 24 --output build/dex-out build/dex-classes/*.class
+          ls -l build/dex-out
+
+      - name: Build Swift dex-smoke
+        run: |
+          set -euo pipefail
+          FILES="Sources/native-loader/SDRArmFPU.swift \
+                 Sources/native-loader/SDRArmNEON.swift \
+                 Sources/native-loader/SDRArmInterpreter.swift \
+                 Sources/native-loader/SDRHostCall.swift \
+                 Sources/native-loader/SDRLibc.swift \
+                 Sources/native-loader/SDRElfParser.swift \
+                 Sources/native-loader/SDRElfDynamic.swift \
+                 Sources/native-loader/SDRImageLoader.swift \
+                 Sources/native-loader/SDRRelocator.swift \
+                 Sources/native-loader/SDRSharedLibrary.swift \
+                 Sources/native-loader/SDRHostStubPool.swift \
+                 Sources/native-loader/SDRAndroidLibs.swift \
+                 Sources/apk-tool/SDRZipArchive.swift \
+                 Sources/sandbox/SDRAddressSpaceAllocator.swift \
+                 Sources/sandbox/SDRMemoryBudget.swift \
+                 Sources/sandbox/SDRMemoryGuard.swift \
+                 Sources/sandbox/SDRMemoryPressureMonitor.swift \
+                 Sources/sandbox/SDRSandbox.swift \
+                 Sources/tools/SDRAlu.swift \
+                 Sources/tools/SDRByteReader.swift \
+                 Sources/tools/SDRLogger.swift \
+                 Sources/tools/SDRSystemProbe.swift \
+                 Sources/tools/SDRTime.swift \
+                 Sources/framework/SDRCore.swift \
+                 Sources/framework/SDREventBus.swift \
+                 Sources/framework/SDRLicense.swift \
+                 Sources/framework/SDRLogStore.swift \
+                 Sources/framework/SDRSettingsStore.swift \
+                 Sources/ios-adapter/SDRFileDescriptorTable.swift \
+                 Sources/ios-adapter/SDRSyscallNumber.swift \
+                 Sources/ios-adapter/SDRSystemServices.swift \
+                 Sources/dex-core/SDRDexOpcode.swift \
+                 Sources/dex-core/SDRDexHeap.swift \
+                 Sources/dex-core/SDRDexParser.swift \
+                 Sources/dex-core/SDRDexInterpreter.swift \
+                 Sources/dex-core/SDRDexLaunchPlan.swift"
+          swiftc -swift-version 5 -O -o build/dex-smoke $FILES Tests/dex/main.swift
+
+      - name: Compare JVM native output with Swift interpreter output
+        run: |
+          set -euo pipefail
+          ./build/dex-smoke build/dex-out/classes.dex Tests/dex/cases.json > build/actual.txt
+          echo "实际值行数：$(wc -l < build/actual.txt)"
+          if ! diff -u build/expect.txt build/actual.txt; then
+            echo "::error::对拍不一致：Java 原生输出与 Swift 解释器输出存在差异"
+            exit 1
+          fi
+          echo "对拍通过：$(wc -l < build/actual.txt) 个用例与 JVM 原生结果完全一致"
+
+      - name: Upload diff artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dex-smoke-diff
+          path: |
+            build/expect.txt
+            build/actual.txt
+          if-no-files-found: ignore

@@ -127,10 +127,11 @@ public final class SDRAppContainer {
             SDRLogger.i("container", "DEX \(header.version) 方法数 \(header.methodIdsSize) 类数 \(header.classDefsSize)")
 
             state.setState(.loading(step: "解释执行", progress: 0.8))
-            let interpreter = SDRDexInterpreter()
-            // 方法体提取（code_item）在单元测试覆盖后接入；当前先验证解释器链路的装载与收尾
-            let result = try interpreter.run(code: [], registerCount: 0)
-            SDRLogger.i("container", "解释器链路就绪，符号样本：\(sample.joined(separator: ", "))；入口返回 \(result)")
+            // DEX 加载 → 类解析 → 入口方法定位 → 解释执行
+            let dexFile = try SDRDexFile(data: dexBytes)
+            let interpreter = SDRDexInterpreter(file: dexFile)
+            let execution = runEntryPoint(dexFile: dexFile, interpreter: interpreter)
+            SDRLogger.i("container", "解释器链路就绪，符号样本：\(sample.joined(separator: ", "))；\(execution)")
 
             var loadedSO: String?
             if let so = meta.soFiles.first {
@@ -162,6 +163,42 @@ public final class SDRAppContainer {
         } catch {
             state.setState(.failed(reason: error.localizedDescription))
             SDRLogger.e("container", "启动失败：\(error.localizedDescription)")
+        }
+    }
+
+    /// 入口方法定位并解释执行：类初始化（<clinit>）→ 入口方法。
+    /// 未实现指令按「记录并保留运行态」处理，其余执行错误如实上报。
+    private func runEntryPoint(dexFile: SDRDexFile, interpreter: SDRDexInterpreter) -> String {
+        guard let entry = SDRDexLaunchPlan.select(file: dexFile) else {
+            SDRLogger.w("container", "DEX 内无可用入口方法（无 main / <clinit> / 普通方法体）")
+            return "未找到可执行入口"
+        }
+
+        for initIndex in entry.classInitializers {
+            do {
+                let value = try interpreter.runMethod(methodIndex: initIndex)
+                SDRLogger.i("container", "类初始化完成：\(dexFile.methodSignature(at: initIndex)) → \(value)")
+            } catch let error as SDRAppError {
+                SDRLogger.w("container", "类初始化未完成（\(error.errorDescription ?? "")）：\(dexFile.methodSignature(at: initIndex))")
+            } catch {
+                SDRLogger.w("container", "类初始化未完成（\(error.localizedDescription)）：\(dexFile.methodSignature(at: initIndex))")
+            }
+        }
+
+        let args: [Int64] = entry.usesStringArrayArgument
+            ? [interpreter.heap.newArray(descriptor: SDRDexLaunchPlan.stringArrayDescriptor, length: 0)]
+            : []
+
+        do {
+            let result = try interpreter.runMethod(methodIndex: entry.methodIndex, args: args)
+            SDRLogger.i("container", "入口执行完成：\(entry.methodSignature) → \(result)")
+            return "入口 \(entry.methodSignature) 返回 \(result)"
+        } catch let error as SDRAppError where error.code == .dexOpUnsupported {
+            SDRLogger.w("container", "入口含未实现指令，保留运行态：\(error.errorDescription ?? "")")
+            return "入口 \(entry.methodSignature) 命中未实现指令：\(error.errorDescription ?? "")"
+        } catch {
+            SDRLogger.e("container", "入口执行失败：\(error.localizedDescription)")
+            return "入口执行失败：\(error.localizedDescription)"
         }
     }
 

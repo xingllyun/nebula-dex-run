@@ -29,22 +29,382 @@ SOFTWARE.
 
 import Foundation
 
-/// DEX 文件头与基础表解析
+/// DEX 文件头（header_item）
 public struct SDRDexHeader {
     public var version: String
     public var fileSize: UInt32
     public var headerSize: UInt32
     public var endianTag: UInt32
+    public var linkSize: UInt32
+    public var linkOff: UInt32
     public var mapOff: UInt32
     public var stringIdsSize: UInt32
     public var stringIdsOff: UInt32
     public var typeIdsSize: UInt32
+    public var typeIdsOff: UInt32
     public var protoIdsSize: UInt32
+    public var protoIdsOff: UInt32
     public var fieldIdsSize: UInt32
+    public var fieldIdsOff: UInt32
     public var methodIdsSize: UInt32
+    public var methodIdsOff: UInt32
     public var classDefsSize: UInt32
+    public var classDefsOff: UInt32
+    public var dataSize: UInt32
+    public var dataOff: UInt32
 
     public var isLittleEndian: Bool { endianTag == 0x12345678 }
+}
+
+/// code_item（方法体）
+public struct SDRDexCodeItem {
+    public var registersSize: UInt16
+    public var insSize: UInt16
+    public var outsSize: UInt16
+    public var triesSize: UInt16
+    public var debugInfoOff: UInt32
+    public var insnsSize: UInt32
+    public var insns: [UInt16]
+}
+
+public struct SDRDexMethodId {
+    public var classIdx: UInt32
+    public var protoIdx: UInt32
+    public var nameIdx: UInt32
+}
+
+public struct SDRDexProtoId {
+    public var shortyIdx: UInt32
+    public var returnTypeIdx: UInt32
+    public var parametersOff: UInt32
+}
+
+public struct SDRDexFieldId {
+    public var classIdx: UInt32
+    public var typeIdx: UInt32
+    public var nameIdx: UInt32
+}
+
+public struct SDRDexClassDef {
+    public var classIdx: UInt32
+    public var accessFlags: UInt32
+    public var superclassIdx: UInt32
+    public var interfacesOff: UInt32
+    public var sourceFileIdx: UInt32
+    public var annotationsOff: UInt32
+    public var classDataOff: UInt32
+    public var staticValuesOff: UInt32
+}
+
+public struct SDRDexEncodedField {
+    public var fieldIdx: UInt32
+    public var accessFlags: UInt32
+}
+
+public struct SDRDexEncodedMethod {
+    public var methodIdx: UInt32
+    public var accessFlags: UInt32
+    public var codeOff: UInt32
+}
+
+public struct SDRDexClassData {
+    public var staticFields: [SDRDexEncodedField]
+    public var instanceFields: [SDRDexEncodedField]
+    public var directMethods: [SDRDexEncodedMethod]
+    public var virtualMethods: [SDRDexEncodedMethod]
+
+    public var allMethods: [SDRDexEncodedMethod] { directMethods + virtualMethods }
+}
+
+/// 已解析的 DEX 文件（头 + 各 id 表 + 类定义；按需惰性读取 code_item / class_data）
+public final class SDRDexFile {
+
+    public let data: [UInt8]
+    public let header: SDRDexHeader
+    public let strings: [String]
+    public let typeIds: [UInt32]
+    public let protoIds: [SDRDexProtoId]
+    public let fieldIds: [SDRDexFieldId]
+    public let methodIds: [SDRDexMethodId]
+    public let classDefs: [SDRDexClassDef]
+
+    /// 签名（"Lcls;->name(proto)ret"）→ method_idx 索引
+    public private(set) lazy var signatureIndex: [String: UInt32] = {
+        var map: [String: UInt32] = [:]
+        for i in 0..<methodIds.count { map[methodSignature(at: UInt32(i))] = UInt32(i) }
+        return map
+    }()
+
+    /// 类描述符（"Lcls;"）→ class_defs 下标
+    public private(set) lazy var classIndex: [String: Int] = {
+        var map: [String: Int] = [:]
+        for (i, def) in classDefs.enumerated() { map[type(at: def.classIdx)] = i }
+        return map
+    }()
+
+    public init(data: [UInt8]) throws {
+        self.data = data
+        let header = try SDRDexParser.parseHeader(data)
+        self.header = header
+
+        var r = SDRByteReader(data, littleEndian: header.isLittleEndian)
+
+        // string_ids → 字符串表
+        var strings: [String] = []
+        strings.reserveCapacity(Int(header.stringIdsSize))
+        for i in 0..<Int(header.stringIdsSize) {
+            r.seek(Int(header.stringIdsOff) + i * 4)
+            guard let off = r.u32() else { break }
+            r.seek(Int(off))
+            guard let _ = r.uleb128(), let n = r.uleb128() else { break }
+            guard let raw = r.bytes(Int(n) + 1) else { break }
+            strings.append(String(decoding: raw.dropLast(), as: UTF8.self))
+        }
+        self.strings = strings
+
+        // type_ids
+        var types: [UInt32] = []
+        types.reserveCapacity(Int(header.typeIdsSize))
+        for i in 0..<Int(header.typeIdsSize) {
+            r.seek(Int(header.typeIdsOff) + i * 4)
+            guard let v = r.u32() else { break }
+            types.append(v)
+        }
+        self.typeIds = types
+
+        // proto_ids（12 字节：shorty / return_type / parameters_off）
+        var protos: [SDRDexProtoId] = []
+        protos.reserveCapacity(Int(header.protoIdsSize))
+        for i in 0..<Int(header.protoIdsSize) {
+            r.seek(Int(header.protoIdsOff) + i * 12)
+            guard let shorty = r.u32(), let ret = r.u32(), let params = r.u32() else { break }
+            protos.append(SDRDexProtoId(shortyIdx: shorty, returnTypeIdx: ret, parametersOff: params))
+        }
+        self.protoIds = protos
+
+        // field_ids（8 字节：class / type / name）
+        var fields: [SDRDexFieldId] = []
+        fields.reserveCapacity(Int(header.fieldIdsSize))
+        for i in 0..<Int(header.fieldIdsSize) {
+            r.seek(Int(header.fieldIdsOff) + i * 8)
+            guard let c = r.u32(), let t = r.u32(), let n = r.u32() else { break }
+            fields.append(SDRDexFieldId(classIdx: c, typeIdx: t, nameIdx: n))
+        }
+        self.fieldIds = fields
+
+        // method_ids（8 字节：class / proto / name）
+        var methods: [SDRDexMethodId] = []
+        methods.reserveCapacity(Int(header.methodIdsSize))
+        for i in 0..<Int(header.methodIdsSize) {
+            r.seek(Int(header.methodIdsOff) + i * 8)
+            guard let c = r.u32(), let p = r.u32(), let n = r.u32() else { break }
+            methods.append(SDRDexMethodId(classIdx: c, protoIdx: p, nameIdx: n))
+        }
+        self.methodIds = methods
+
+        // class_defs（32 字节）
+        var defs: [SDRDexClassDef] = []
+        defs.reserveCapacity(Int(header.classDefsSize))
+        for i in 0..<Int(header.classDefsSize) {
+            r.seek(Int(header.classDefsOff) + i * 32)
+            guard let c = r.u32(), let af = r.u32(), let sc = r.u32(), let itf = r.u32(),
+                  let sf = r.u32(), let ann = r.u32(), let cd = r.u32(), let sv = r.u32() else { break }
+            defs.append(SDRDexClassDef(classIdx: c, accessFlags: af, superclassIdx: sc,
+                                       interfacesOff: itf, sourceFileIdx: sf,
+                                       annotationsOff: ann, classDataOff: cd, staticValuesOff: sv))
+        }
+        self.classDefs = defs
+
+        if Int(header.methodIdsSize) != methods.count {
+            throw SDRAppError(.dexBadMagic,
+                              "method_ids 表截断：声明 \(header.methodIdsSize) 实读 \(methods.count)")
+        }
+        if Int(header.classDefsSize) != defs.count {
+            throw SDRAppError(.dexBadMagic,
+                              "class_defs 表截断：声明 \(header.classDefsSize) 实读 \(defs.count)")
+        }
+    }
+
+    // MARK: - 描述符
+
+    /// type_idx → 原始描述符（如 "Ljava/lang/String;" / "[I" / "I"）
+    public func typeDescriptor(at idx: UInt32) -> String {
+        guard Int(idx) < typeIds.count else { return "?" }
+        let si = Int(typeIds[Int(idx)])
+        guard si < strings.count else { return "?" }
+        return strings[si]
+    }
+
+    /// 描述符 → 人类可读名（"Ljava/lang/String;" → "java.lang.String"）
+    public static func humanDescriptor(_ descriptor: String) -> String {
+        var s = descriptor
+        var arrays = 0
+        while s.hasPrefix("[") { arrays += 1; s.removeFirst() }
+        var base: String
+        if s.hasPrefix("L") && s.hasSuffix(";") && s.count >= 2 {
+            base = String(s.dropFirst().dropLast()).replacingOccurrences(of: "/", with: ".")
+        } else {
+            base = primitiveName(s)
+        }
+        return base + String(repeating: "[]", count: arrays)
+    }
+
+    public static func primitiveName(_ short: String) -> String {
+        switch short {
+        case "V": return "void"
+        case "Z": return "boolean"
+        case "B": return "byte"
+        case "S": return "short"
+        case "C": return "char"
+        case "I": return "int"
+        case "J": return "long"
+        case "F": return "float"
+        case "D": return "double"
+        default: return short
+        }
+    }
+
+    /// proto_idx → "(I I)J" 风格的参数/返回描述串（dex 原始描述符）
+    public func protoString(at idx: UInt32) -> String {
+        guard Int(idx) < protoIds.count else { return "()V" }
+        let proto = protoIds[Int(idx)]
+        var params: [String] = []
+        for t in parameterTypeIndices(proto) { params.append(typeDescriptor(at: t)) }
+        return "(" + params.joined() + ")" + typeDescriptor(at: proto.returnTypeIdx)
+    }
+
+    /// 参数类型索引列表（按 type_list 顺序展开）
+    public func parameterTypeIndices(_ proto: SDRDexProtoId) -> [UInt32] {
+        guard proto.parametersOff != 0 else { return [] }
+        var r = SDRByteReader(data, littleEndian: header.isLittleEndian)
+        r.seek(Int(proto.parametersOff))
+        guard let size = r.u32() else { return [] }
+        var out: [UInt32] = []
+        for i in 0..<Int(size) {
+            r.seek(Int(proto.parametersOff) + 4 + i * 2)
+            guard let t = r.u16() else { break }
+            out.append(UInt32(t))
+        }
+        return out
+    }
+
+    /// 方法签名："LProbe;->i2l(I)J"
+    public func methodSignature(at idx: UInt32) -> String {
+        guard Int(idx) < methodIds.count else { return "?->?(?)?" }
+        let m = methodIds[Int(idx)]
+        let cls = typeDescriptor(at: m.classIdx)
+        let name = Int(m.nameIdx) < strings.count ? strings[Int(m.nameIdx)] : "?"
+        return cls + "->" + name + protoString(at: m.protoIdx)
+    }
+
+    /// 方法签名拆分：(类描述符, 方法名, 原型串)
+    public func methodParts(at idx: UInt32) -> (cls: String, name: String, proto: String) {
+        guard Int(idx) < methodIds.count else { return ("?", "?", "()V") }
+        let m = methodIds[Int(idx)]
+        let cls = typeDescriptor(at: m.classIdx)
+        let name = Int(m.nameIdx) < strings.count ? strings[Int(m.nameIdx)] : "?"
+        return (cls, name, protoString(at: m.protoIdx))
+    }
+
+    /// 字段签名："LProbe;->seed:I"
+    public func fieldSignature(at idx: UInt32) -> String {
+        guard Int(idx) < fieldIds.count else { return "?->?:?" }
+        let f = fieldIds[Int(idx)]
+        let cls = typeDescriptor(at: f.classIdx)
+        let name = Int(f.nameIdx) < strings.count ? strings[Int(f.nameIdx)] : "?"
+        return cls + "->" + name + ":" + typeDescriptor(at: f.typeIdx)
+    }
+
+    // MARK: - 查找
+
+    public func findMethodIndex(_ signature: String) -> UInt32? { signatureIndex[signature] }
+
+    public func findClassDef(_ descriptor: String) -> SDRDexClassDef? {
+        guard let i = classIndex[descriptor] else { return nil }
+        return classDefs[i]
+    }
+
+    /// 某个类的方法体列表（含直接/虚方法）
+    public func methods(ofClass descriptor: String) -> [SDRDexEncodedMethod] {
+        guard let def = findClassDef(descriptor), def.classDataOff != 0,
+              let cd = try? classData(at: def.classDataOff) else { return [] }
+        return cd.allMethods
+    }
+
+    /// 全量方法体（遍历所有类，供单元测试对拍使用）
+    public func allEncodedMethods() -> [SDRDexEncodedMethod] {
+        var out: [SDRDexEncodedMethod] = []
+        for def in classDefs where def.classDataOff != 0 {
+            if let cd = try? classData(at: def.classDataOff) { out.append(contentsOf: cd.allMethods) }
+        }
+        return out
+    }
+
+    // MARK: - code_item / class_data
+
+    public func codeItem(at off: UInt32) throws -> SDRDexCodeItem {
+        guard off != 0, Int(off) < data.count else {
+            throw SDRAppError(.dexBadMagic, "code_item 偏移非法：\(off)")
+        }
+        var r = SDRByteReader(data, littleEndian: header.isLittleEndian)
+        r.seek(Int(off))
+        guard let regs = r.u16(), let ins = r.u16(), let outs = r.u16(), let tries = r.u16(),
+              let dbg = r.u32(), let size = r.u32() else {
+            throw SDRAppError(.dexBadMagic, "code_item 头解析失败 @\(off)")
+        }
+        let byteCount = Int(size) * 2
+        guard let raw = r.bytes(byteCount) else {
+            throw SDRAppError(.dexBadMagic, "code_item 指令区截断 @\(off)（声明 \(size) code unit）")
+        }
+        var insns = [UInt16](repeating: 0, count: Int(size))
+        for i in 0..<Int(size) {
+            insns[i] = UInt16(raw[i * 2]) | (UInt16(raw[i * 2 + 1]) << 8)
+        }
+        return SDRDexCodeItem(registersSize: regs, insSize: ins, outsSize: outs,
+                              triesSize: tries, debugInfoOff: dbg,
+                              insnsSize: size, insns: insns)
+    }
+
+    public func classData(at off: UInt32) throws -> SDRDexClassData {
+        guard off != 0, Int(off) < data.count else {
+            throw SDRAppError(.dexBadMagic, "class_data 偏移非法：\(off)")
+        }
+        var r = SDRByteReader(data, littleEndian: header.isLittleEndian)
+        r.seek(Int(off))
+        guard let staticCount = r.uleb128(), let instanceCount = r.uleb128(),
+              let directCount = r.uleb128(), let virtualCount = r.uleb128() else {
+            throw SDRAppError(.dexBadMagic, "class_data 头解析失败 @\(off)")
+        }
+
+        func readFields(_ count: UInt32) -> [SDRDexEncodedField] {
+            var out: [SDRDexEncodedField] = []
+            var idx: UInt32 = 0
+            for _ in 0..<Int(count) {
+                guard let diff = r.uleb128(), let flags = r.uleb128() else { break }
+                idx &+= diff
+                out.append(SDRDexEncodedField(fieldIdx: idx, accessFlags: flags))
+            }
+            return out
+        }
+
+        func readMethods(_ count: UInt32) -> [SDRDexEncodedMethod] {
+            var out: [SDRDexEncodedMethod] = []
+            var idx: UInt32 = 0
+            for _ in 0..<Int(count) {
+                guard let diff = r.uleb128(), let flags = r.uleb128(), let code = r.uleb128() else { break }
+                idx &+= diff
+                out.append(SDRDexEncodedMethod(methodIdx: idx, accessFlags: flags, codeOff: code))
+            }
+            return out
+        }
+
+        let staticFields = readFields(staticCount)
+        let instanceFields = readFields(instanceCount)
+        let directMethods = readMethods(directCount)
+        let virtualMethods = readMethods(virtualCount)
+        return SDRDexClassData(staticFields: staticFields, instanceFields: instanceFields,
+                               directMethods: directMethods, virtualMethods: virtualMethods)
+    }
 }
 
 public enum SDRDexParser {
@@ -61,27 +421,33 @@ public enum SDRDexParser {
         var r = SDRByteReader(data)
         r.seek(32)
         guard let fileSize = r.u32(), let headerSize = r.u32(), let endianTag = r.u32(),
-              let _ = r.u32(), let mapOff = r.u32() else {
-            throw SDRAppError(.dexBadMagic, "DEX 头解析失败")
-        }
-        let little = endianTag == 0x12345678
-        r.littleEndian = little
-        r.seek(56)
-        guard let stringIdsSize = r.u32(), let stringIdsOff = r.u32(),
-              let typeIdsSize = r.u32(), let _ = r.u32(),
-              let protoIdsSize = r.u32(), let _ = r.u32(),
-              let fieldIdsSize = r.u32(), let _ = r.u32(),
-              let methodIdsSize = r.u32(), let _ = r.u32(),
-              let classDefsSize = r.u32() else {
+              let linkSize = r.u32(), let linkOff = r.u32(), let mapOff = r.u32(),
+              let stringIdsSize = r.u32(), let stringIdsOff = r.u32(),
+              let typeIdsSize = r.u32(), let typeIdsOff = r.u32(),
+              let protoIdsSize = r.u32(), let protoIdsOff = r.u32(),
+              let fieldIdsSize = r.u32(), let fieldIdsOff = r.u32(),
+              let methodIdsSize = r.u32(), let methodIdsOff = r.u32(),
+              let classDefsSize = r.u32(), let classDefsOff = r.u32(),
+              let dataSize = r.u32(), let dataOff = r.u32() else {
             throw SDRAppError(.dexBadMagic, "DEX 头解析失败")
         }
 
-        return SDRDexHeader(version: version, fileSize: fileSize, headerSize: headerSize,
-                            endianTag: endianTag, mapOff: mapOff,
-                            stringIdsSize: stringIdsSize, stringIdsOff: stringIdsOff,
-                            typeIdsSize: typeIdsSize, protoIdsSize: protoIdsSize,
-                            fieldIdsSize: fieldIdsSize, methodIdsSize: methodIdsSize,
-                            classDefsSize: classDefsSize)
+        let header = SDRDexHeader(version: version, fileSize: fileSize, headerSize: headerSize,
+                                  endianTag: endianTag, linkSize: linkSize, linkOff: linkOff,
+                                  mapOff: mapOff,
+                                  stringIdsSize: stringIdsSize, stringIdsOff: stringIdsOff,
+                                  typeIdsSize: typeIdsSize, typeIdsOff: typeIdsOff,
+                                  protoIdsSize: protoIdsSize, protoIdsOff: protoIdsOff,
+                                  fieldIdsSize: fieldIdsSize, fieldIdsOff: fieldIdsOff,
+                                  methodIdsSize: methodIdsSize, methodIdsOff: methodIdsOff,
+                                  classDefsSize: classDefsSize, classDefsOff: classDefsOff,
+                                  dataSize: dataSize, dataOff: dataOff)
+
+        guard header.isLittleEndian else {
+            throw SDRAppError(.dexBadMagic,
+                              String(format: "不支持的端序标记 0x%08X（DEX 只允许小端）", endianTag))
+        }
+        return header
     }
 
     /// 读取字符串表（用于日志与调试展示）
@@ -94,7 +460,7 @@ public enum SDRDexParser {
             r.seek(Int(offset))
             guard let _ = r.uleb128(), let count = r.uleb128() else { break }
             guard let raw = r.bytes(Int(count) + 1) else { break }
-            if let s = String(bytes: raw.dropLast(), encoding: .utf8) { result.append(s) }
+            result.append(String(decoding: raw.dropLast(), as: UTF8.self))
         }
         return result
     }
