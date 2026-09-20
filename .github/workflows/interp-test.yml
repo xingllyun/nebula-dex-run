@@ -116,41 +116,57 @@ jobs:
           ./interp-test Tests/interp/vectors_neon3.json
 
       - name: Run syscall proxy smoke (stage 2)
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./syscall-smoke
 
       - name: Run minimal libc smoke (stage 2)
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./libc-smoke
 
       - name: Run SO loader smoke (stage 2)
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./elf-smoke
 
       - name: Run dynamic dependency smoke (stage 2)
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./dl-smoke
 
       - name: Run ZIP archive smoke
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./zip-smoke
 
       - name: Run settings persistence smoke
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./settings-smoke
 
       - name: Run host stub binding smoke (stage 2)
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./host-smoke
 
       - name: Run Android base libraries smoke (stage 2)
+        # 前置 NEON / Hardening 若失败，仍执行本步骤，避免整段回归信号被跳过
+        if: always()
         run: |
           set -euo pipefail
           ./android-libs-smoke
