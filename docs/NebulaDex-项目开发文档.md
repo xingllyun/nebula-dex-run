@@ -156,8 +156,10 @@ AIGC:
 | 文件 | 行数 | 说明 |
 |------|------|------|
 | `SDRZipArchive.swift` | 260 | ZIP 解压，inflateWindowed + inflateZlib |
-| `SDRAPKParser.swift` | 117 | APK 元数据解析（SO 候选按 ABI 排序，全路径 / 裸名双兼容） |
+| `SDRAPKParser.swift` | 132 | APK 元数据解析（SO 候选按 ABI 排序，全路径 / 裸名双兼容，条目缺失降级） |
 | `SDRHardeningDetector.swift` | 77 | 加固检测 |
+
+**SO 缺失处理**：`extractSo` 对全路径 / 裸名两种入参均先探测条目存在性，缺失时返回 `nil` 并输出可用 ABI 诊断（不再误报 `APK_BAD_ZIP` 并中断启动）；容器侧只取本机 ABI（arm64-v8a）目录下的候选，单个 SO 装载失败降级为告警，DEX 解释链路照常运行。
 
 ### 3.9 框架层
 
@@ -208,7 +210,7 @@ AIGC:
 
 ### 3.12 Metal 渲染层（阶段四）
 
-`Sources/render/` 共 **2,901 行**（13 文件），承载阶段四渲染管线全链路：
+`Sources/render/` 共 **2,911 行**（13 文件），承载阶段四渲染管线全链路：
 
 | 文件 | 行数 | 说明 |
 |------|------|------|
@@ -216,14 +218,14 @@ AIGC:
 | `SDRCommandRecorder.swift` | 221 | 命令录制、批次合并（`SDRVertexBuilder`）、脏区集合 |
 | `SDRRenderDevice.swift` | 139 | 设备与在飞帧同步 |
 | `SDRMetalFormatBridge.swift` | 63 | 像素格式 ↔ `MTLPixelFormat` 桥 |
-| `SDRPipelineCache.swift` | 183 | 管线状态对象缓存与预热 |
-| `SDRTexturePool.swift` | 155 | 纹理池（位图 / 字形图集） |
-| `SDRMetalRenderTarget.swift` | 152 | 绘制目标与清屏 |
+| `SDRPipelineCache.swift` | 186 | 管线状态对象缓存与预热 |
+| `SDRTexturePool.swift` | 156 | 纹理池（位图 / 字形图集） |
+| `SDRMetalRenderTarget.swift` | 154 | 绘制目标与清屏 |
 | `SDRShaderSource.swift` | 154 | 内联 MSL 着色器（纯色 / 圆角 / 纹理 / 渐变） |
 | `SDRFrameScheduler.swift` | 279 | 帧调度与档位降级 |
 | `SDRDisplayLinkDriver.swift` | 96 | CADisplayLink 驱动（**唯一依赖 ObjC 运行时的文件**） |
-| `SDRRenderLoop.swift` | 581 | 循环主体：三槽动态顶点缓冲 → 编码 → 提交 |
-| `SDRRenderBridge.swift` | 247 | guest 侧 host-call 桥（矩形 / 位图 / 渐变 / 裁剪栈 / 脏区 / 档位 / 统计） |
+| `SDRRenderLoop.swift` | 584 | 循环主体：三槽动态顶点缓冲 → 编码 → 提交 |
+| `SDRRenderBridge.swift` | 248 | guest 侧 host-call 桥（矩形 / 位图 / 渐变 / 裁剪栈 / 脏区 / 档位 / 统计） |
 | `SDRMetalRenderView.swift` | 265 | `CAMetalLayer` 承载视图：尺寸同步、前后台节流、内存告警、触控接入 |
 
 **设计要点**：绘制命令值语义（`SDRDrawCommand`）+ 批次合并 + 脏区局部渲染 + PSO 预热 + 三槽顶点缓冲。
@@ -365,6 +367,7 @@ ret                           // 按 AAPCS64 返回
 | settings-smoke | — | 全绿 |
 | zip-smoke | 13 | 全绿（含 SO 装载路径回归） |
 | touch-smoke | 20 | 全绿（阶段四触控路由） |
+| NEON 标量 pairwise | 8 | 已知未实现（`faddp` / `fmaxp` / `fminp` / `fmaxnmp` / `fminnmp` 的 2s·2d），CI 记为已知项 |
 
 ### 6.3 静态自检
 

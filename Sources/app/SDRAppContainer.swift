@@ -134,24 +134,30 @@ public final class SDRAppContainer {
             SDRLogger.i("container", "解释器链路就绪，符号样本：\(sample.joined(separator: ", "))；\(execution)")
 
             var loadedSO: String?
-            // 装载候选：优先本机首选 ABI 目录下的 SO，避免误取其它 ABI 的镜像
-            let preferredABI = meta.abis.first ?? "arm64-v8a"
+            // 装载候选：只取本机首选 ABI 目录下的 SO，避免误取其它 ABI 的镜像
+            let preferredABI = "arm64-v8a"
             let soCandidate = meta.soFiles.first { $0.hasPrefix("lib/\(preferredABI)/") }
-                ?? meta.soFiles.first
             if let so = soCandidate {
-                let soBytes = try parser.extractSo(so, abi: preferredABI)
-                if let bytes = soBytes {
-                    let loader = SDRImageLoader()
-                    let image = try loader.load(bytes: bytes, path: so, preferredABI: preferredABI)
-                    let services = SDRSystemServices()
-                    let ctx = SDRCpuContext(pc: SDRImageLoaderEntryPoint(image: image))
-                    let armInterp = SDRArmInterpreter(context: ctx,
-                                                      memory: image.memory,
-                                                      services: services)
-                    services.bind(interpreter: armInterp)
-                    bridge.register(image: image, interpreter: armInterp)
-                    loadedSO = so
+                // 单个 SO 装载失败降级为告警：DEX 解释链路照常运行，不整体启动失败
+                do {
+                    if let bytes = try parser.extractSo(so, abi: preferredABI) {
+                        let loader = SDRImageLoader()
+                        let image = try loader.load(bytes: bytes, path: so, preferredABI: preferredABI)
+                        let services = SDRSystemServices()
+                        let ctx = SDRCpuContext(pc: SDRImageLoaderEntryPoint(image: image))
+                        let armInterp = SDRArmInterpreter(context: ctx,
+                                                          memory: image.memory,
+                                                          services: services)
+                        services.bind(interpreter: armInterp)
+                        bridge.register(image: image, interpreter: armInterp)
+                        loadedSO = so
+                    }
+                } catch {
+                    SDRLogger.w("container", "SO 装载失败（已跳过）：\(so) → \(error.localizedDescription)")
                 }
+            } else {
+                let available = meta.abis.isEmpty ? "无" : meta.abis.joined(separator: ", ")
+                SDRLogger.w("container", "APK 未提供 \(preferredABI) 原生库（可用 ABI：\(available)），跳过 SO 装载")
             }
 
             state.currentApp = info

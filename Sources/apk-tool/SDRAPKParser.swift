@@ -101,10 +101,25 @@ public final class SDRAPKParser {
     /// `APK_BAD_ZIP 条目不存在`（load 首个 SO 即失败）。
     public func extractSo(_ name: String, abi: String) throws -> [UInt8]? {
         if name.contains("/") {
+            guard archive.contains(name) else {
+                logMissing(name)
+                return nil
+            }
             return try archive.extract(name)
         }
         guard abis.contains(abi) else { return nil }
-        return try archive.extract("lib/\(abi)/\(name)")
+        let path = "lib/\(abi)/\(name)"
+        guard archive.contains(path) else {
+            logMissing(path)
+            return nil
+        }
+        return try archive.extract(path)
+    }
+
+    /// 条目缺失的诊断日志：不抛错、不误判为坏包，交调用方决定是否降级
+    private func logMissing(_ path: String) {
+        let available = abis.isEmpty ? "无" : abis.joined(separator: ", ")
+        SDRLogger.w("apk", "SO 条目缺失，跳过装载：\(path)（APK 可用 ABI：\(available)）")
     }
 
     public var abis: [String] {
