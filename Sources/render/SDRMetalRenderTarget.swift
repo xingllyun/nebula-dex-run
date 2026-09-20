@@ -92,7 +92,9 @@ public final class SDRMetalRenderTarget {
         }
 
         let descriptor = MTLRenderPassDescriptor()
-        let attachment = descriptor.colorAttachments[0]
+        guard let attachment = descriptor.colorAttachments[0] else {
+            throw SDRRenderError.targetNotConfigured
+        }
         attachment.clearColor = MTLClearColor(red: Double(clearColor.r),
                                               green: Double(clearColor.g),
                                               blue: Double(clearColor.b),

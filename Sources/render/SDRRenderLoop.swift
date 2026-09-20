@@ -298,10 +298,13 @@ public final class SDRRenderLoop {
         let sourceTexture = device.makeTexture(descriptor: sourceDescriptor)
 
         let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = colorTexture
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
+        guard let passAttachment = pass.colorAttachments[0] else {
+            throw SDRRenderError.textureAllocationFailed("预热离屏颜色附件不可用")
+        }
+        passAttachment.texture = colorTexture
+        passAttachment.loadAction = .clear
+        passAttachment.storeAction = .store
+        passAttachment.clearColor = MTLClearColor(red: 0, green: 0, blue: 0, alpha: 1)
         pass.renderTargetWidth = 8
         pass.renderTargetHeight = 8
 

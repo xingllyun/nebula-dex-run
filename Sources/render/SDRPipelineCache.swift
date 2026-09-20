@@ -169,14 +169,16 @@ public final class SDRPipelineCache {
         descriptor.fragmentFunction = fragmentFunction
         descriptor.rasterSampleCount = max(key.sampleCount, 1)
 
-        let attachment = descriptor.colorAttachments[0]
+        guard let attachment = descriptor.colorAttachments[0] else {
+            throw SDRRenderError.pipelineBuildFailed("\(key.debugName)：颜色附件不可用")
+        }
         attachment.pixelFormat = key.format.metalValue
         SDRBlendConfigurator.apply(key.blend, to: attachment)
 
         do {
-            let state = try device.makeRenderPipelineState(descriptor: descriptor)
-            state.label = key.debugName   // MTLRenderPipelineDescriptor 无 label，标签设在状态对象上
-            return state
+            // MTLRenderPipelineDescriptor 无 label，MTLRenderPipelineState.label 只读：
+            // 管线标识统一走 key.debugName（日志侧），不在状态对象上设标签
+            return try device.makeRenderPipelineState(descriptor: descriptor)
         } catch {
             throw SDRRenderError.pipelineBuildFailed("\(key.debugName)：\(error)")
         }
