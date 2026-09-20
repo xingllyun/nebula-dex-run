@@ -191,9 +191,11 @@ public final class SDRDexInterpreter {
         let dex = file
         var pc = 0
 
+        var localSteps = 0
         while pc < code.count {
+            localSteps += 1
             executedSteps += 1
-            if executedSteps > maxSteps {
+            if localSteps > maxSteps {
                 throw SDRAppError(.dexOpUnsupported, "指令步数超限（疑似死循环），已中止")
             }
 
@@ -225,13 +227,13 @@ public final class SDRDexInterpreter {
 
             // ---- 0x01-0x09 move 族 ----
             case 0x01, 0x07:                                            // move / move-object (12x)
-                wr32(&regs, Int(unit & 0x0F), rd32(regs, Int((unit >> 4) & 0x0F)))
+                wr32(&regs, Int((unit >> 8) & 0x0F), rd32(regs, Int((unit >> 12) & 0x0F)))
             case 0x02, 0x08:                                            // move/from16 / move-object/from16 (22x)
                 wr32(&regs, Int(unit >> 8), rd32(regs, Int(u1(code, pc + 1))))
             case 0x03, 0x09:                                            // move/16 / move-object/16 (32x)
                 wr32(&regs, Int(u1(code, pc + 1)), rd32(regs, Int(u1(code, pc + 2))))
             case 0x04:                                                  // move-wide (12x)
-                wrW(&regs, Int(unit & 0x0F), rdW(regs, Int((unit >> 4) & 0x0F)))
+                wrW(&regs, Int((unit >> 8) & 0x0F), rdW(regs, Int((unit >> 12) & 0x0F)))
             case 0x05:                                                  // move-wide/from16 (22x)
                 wrW(&regs, Int(unit >> 8), rdW(regs, Int(u1(code, pc + 1))))
             case 0x06:                                                  // move-wide/16 (32x)
@@ -300,11 +302,11 @@ public final class SDRDexInterpreter {
             case 0x20:                                                  // instance-of
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "instance-of 需要 DEX 文件上下文") }
                 let target = dex.typeDescriptor(at: UInt32(u1(code, pc + 1)))
-                let obj = rd32(regs, Int((unit >> 4) & 0x0F))
-                wr32(&regs, Int(unit & 0x0F), heap.isInstance(obj, of: target) ? 1 : 0)
+                let obj = rd32(regs, Int((unit >> 12) & 0x0F))
+                wr32(&regs, Int((unit >> 8) & 0x0F), heap.isInstance(obj, of: target) ? 1 : 0)
             case 0x21:                                                  // array-length (12x)
-                let handle = rd32(regs, Int((unit >> 4) & 0x0F))
-                wr32(&regs, Int(unit & 0x0F), Int64(heap.arrayLength(handle)))
+                let handle = rd32(regs, Int((unit >> 12) & 0x0F))
+                wr32(&regs, Int((unit >> 8) & 0x0F), Int64(heap.arrayLength(handle)))
 
             // ---- 0x22-0x23 分配 ----
             case 0x22:                                                  // new-instance
@@ -314,8 +316,8 @@ public final class SDRDexInterpreter {
             case 0x23:                                                  // new-array
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "new-array 需要 DEX 文件上下文") }
                 let desc = dex.typeDescriptor(at: UInt32(u1(code, pc + 1)))
-                let length = Int(rd32(regs, Int((unit >> 4) & 0x0F)))
-                wr32(&regs, Int(unit & 0x0F), heap.newArray(descriptor: desc, length: length))
+                let length = Int(rd32(regs, Int((unit >> 12) & 0x0F)))
+                wr32(&regs, Int((unit >> 8) & 0x0F), heap.newArray(descriptor: desc, length: length))
 
             // ---- 0x24-0x25 filled-new-array ----
             case 0x24, 0x25:
@@ -325,11 +327,11 @@ public final class SDRDexInterpreter {
                 var slots: [Int] = []
                 var count = 0
                 if opcode == 0x24 {
-                    count = Int(unit & 0x0F)
+                    count = Int((unit >> 12) & 0x0F)
                     let word = u1(code, pc + 2)
                     var list: [Int] = []
-                    if count >= 5 { list.append(Int((unit >> 12) & 0x0F)) }
                     for i in 0..<4 { list.append(Int((word >> (4 * i)) & 0x0F)) }
+                    if count >= 5 { list.append(Int((unit >> 8) & 0x0F)) }
                     slots = Array(list.prefix(count))
                 } else {
                     count = Int(unit >> 8)
@@ -411,8 +413,8 @@ public final class SDRDexInterpreter {
 
             // ---- 0x32-0x37 if-test ----
             case 0x32, 0x33, 0x34, 0x35, 0x36, 0x37:
-                let a = rd32(regs, Int(unit & 0x0F))
-                let b = rd32(regs, Int((unit >> 4) & 0x0F))
+                let a = rd32(regs, Int((unit >> 8) & 0x0F))
+                let b = rd32(regs, Int((unit >> 12) & 0x0F))
                 let off = Int(Int16(bitPattern: u1(code, pc + 1)))
                 let hit: Bool
                 switch opcode {
@@ -442,9 +444,9 @@ public final class SDRDexInterpreter {
 
             // ---- 0x44-0x4A aget 族 ----
             case 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A:
-                let a = Int(unit & 0x0F)
-                let arr = rd32(regs, Int((unit >> 4) & 0x0F))
-                let idx = Int(rd32(regs, Int(unit >> 8)))
+                let a = Int((unit >> 8) & 0x0F)
+                let arr = rd32(regs, Int(u1(code, pc + 1) & 0xFF))
+                let idx = Int(rd32(regs, Int(u1(code, pc + 1) >> 8)))
                 let raw = heap.element(arr, idx)
                 switch opcode {
                 case 0x47: wr32(&regs, a, raw & 1)                          // aget-boolean
@@ -457,9 +459,9 @@ public final class SDRDexInterpreter {
 
             // ---- 0x4B-0x51 aput 族 ----
             case 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51:
-                let a = Int(unit & 0x0F)
-                let arr = rd32(regs, Int((unit >> 4) & 0x0F))
-                let idx = Int(rd32(regs, Int(unit >> 8)))
+                let a = Int((unit >> 8) & 0x0F)
+                let arr = rd32(regs, Int(u1(code, pc + 1) & 0xFF))
+                let idx = Int(rd32(regs, Int(u1(code, pc + 1) >> 8)))
                 let value: Int64
                 switch opcode {
                 case 0x4E: value = rd32(regs, a) & 1                        // aput-boolean
@@ -475,30 +477,30 @@ public final class SDRDexInterpreter {
             case 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58:
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "iget 需要 DEX 文件上下文") }
                 let key = SDRDexInterpreter.fieldKey(dex.fieldSignature(at: UInt32(u1(code, pc + 1))))
-                let obj = rd32(regs, Int((unit >> 4) & 0x0F))
+                let obj = rd32(regs, Int((unit >> 12) & 0x0F))
                 let raw = heap.field(obj, key)
                 switch opcode {
-                case 0x55: wr32(&regs, Int(unit & 0x0F), raw & 1)
-                case 0x56: wr32(&regs, Int(unit & 0x0F), s8(raw))
-                case 0x57: wr32(&regs, Int(unit & 0x0F), raw & 0xFFFF)
-                case 0x58: wr32(&regs, Int(unit & 0x0F), s16(raw))
-                case 0x53: wrW(&regs, Int(unit & 0x0F), raw)
-                default: wr32(&regs, Int(unit & 0x0F), raw)
+                case 0x55: wr32(&regs, Int((unit >> 8) & 0x0F), raw & 1)
+                case 0x56: wr32(&regs, Int((unit >> 8) & 0x0F), s8(raw))
+                case 0x57: wr32(&regs, Int((unit >> 8) & 0x0F), raw & 0xFFFF)
+                case 0x58: wr32(&regs, Int((unit >> 8) & 0x0F), s16(raw))
+                case 0x53: wrW(&regs, Int((unit >> 8) & 0x0F), raw)
+                default: wr32(&regs, Int((unit >> 8) & 0x0F), raw)
                 }
 
             // ---- 0x59-0x5F iput 族 ----
             case 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F:
                 guard let dex = dex else { throw SDRAppError(.dexOpUnsupported, "iput 需要 DEX 文件上下文") }
                 let key = SDRDexInterpreter.fieldKey(dex.fieldSignature(at: UInt32(u1(code, pc + 1))))
-                let obj = rd32(regs, Int((unit >> 4) & 0x0F))
+                let obj = rd32(regs, Int((unit >> 12) & 0x0F))
                 let value: Int64
                 switch opcode {
-                case 0x5C: value = rd32(regs, Int(unit & 0x0F)) & 1
-                case 0x5D: value = s8(rd32(regs, Int(unit & 0x0F)))
-                case 0x5E: value = rd32(regs, Int(unit & 0x0F)) & 0xFFFF
-                case 0x5F: value = s16(rd32(regs, Int(unit & 0x0F)))
-                case 0x5A: value = rdW(regs, Int(unit & 0x0F))
-                default: value = rd32(regs, Int(unit & 0x0F))
+                case 0x5C: value = rd32(regs, Int((unit >> 8) & 0x0F)) & 1
+                case 0x5D: value = s8(rd32(regs, Int((unit >> 8) & 0x0F)))
+                case 0x5E: value = rd32(regs, Int((unit >> 8) & 0x0F)) & 0xFFFF
+                case 0x5F: value = s16(rd32(regs, Int((unit >> 8) & 0x0F)))
+                case 0x5A: value = rdW(regs, Int((unit >> 8) & 0x0F))
+                default: value = rd32(regs, Int((unit >> 8) & 0x0F))
                 }
                 heap.setField(obj, key, value)
 
@@ -545,11 +547,11 @@ public final class SDRDexInterpreter {
                         if t == "J" || t == "D" { args.append(rdW(regs, slot)); slot += 2 } else { args.append(rd32(regs, slot)); slot += 1 }
                     }
                 } else {
-                    let count = Int(unit & 0x0F)
+                    let count = Int((unit >> 12) & 0x0F)
                     let word = u1(code, pc + 2)
                     var slots: [Int] = []
-                    if count >= 5 { slots.append(Int((unit >> 12) & 0x0F)) }
                     for i in 0..<4 { slots.append(Int((word >> (4 * i)) & 0x0F)) }
+                    if count >= 5 { slots.append(Int((unit >> 8) & 0x0F)) }
                     var cursor = 0
                     for t in types {
                         guard cursor < slots.count else { break }
@@ -565,37 +567,37 @@ public final class SDRDexInterpreter {
                 result = try invokeResolved(signature: signature, methodIndex: methodIdx, args: args)
 
             // ---- 0x7B-0x80 neg/not 族 ----
-            case 0x7B: wr32(&regs, Int(unit >> 8), s32(0 &- s32(rd32(regs, Int(unit >> 8)))))   // neg-int
-            case 0x7C: wr32(&regs, Int(unit >> 8), s32(~s32(rd32(regs, Int(unit >> 8)))))       // not-int
-            case 0x7D: wrW(&regs, Int(unit >> 8), 0 &- rdW(regs, Int(unit >> 8)))               // neg-long
-            case 0x7E: wrW(&regs, Int(unit >> 8), ~rdW(regs, Int(unit >> 8)))                   // not-long
+            case 0x7B: wr32(&regs, Int((unit >> 8) & 0x0F), s32(0 &- s32(rd32(regs, Int((unit >> 12) & 0x0F)))))   // neg-int
+            case 0x7C: wr32(&regs, Int((unit >> 8) & 0x0F), s32(~s32(rd32(regs, Int((unit >> 12) & 0x0F)))))       // not-int
+            case 0x7D: wrW(&regs, Int((unit >> 8) & 0x0F), 0 &- rdW(regs, Int((unit >> 12) & 0x0F)))               // neg-long
+            case 0x7E: wrW(&regs, Int((unit >> 8) & 0x0F), ~rdW(regs, Int((unit >> 12) & 0x0F)))                   // not-long
             case 0x7F, 0x80:
                 throw SDRAppError(.dexOpUnsupported,
                                   "\(SDRDexOpcode.name(opcode: opcode)) 属浮点族，待阶段五实现 @pc=\(pc)")
 
             // ---- 0x81-0x8F 类型转换（整数域；浮点域待阶段五）----
-            case 0x81: wrW(&regs, Int(unit >> 8), s32(rd32(regs, Int(unit >> 8))))              // int-to-long
-            case 0x84: wr32(&regs, Int(unit >> 8), s32(rdW(regs, Int(unit >> 8))))              // long-to-int
-            case 0x8D: wr32(&regs, Int(unit >> 8), s8(rd32(regs, Int(unit >> 8))))              // int-to-byte
-            case 0x8E: wr32(&regs, Int(unit >> 8), rd32(regs, Int(unit >> 8)) & 0xFFFF)         // int-to-char
-            case 0x8F: wr32(&regs, Int(unit >> 8), s16(rd32(regs, Int(unit >> 8))))             // int-to-short
+            case 0x81: wrW(&regs, Int((unit >> 8) & 0x0F), s32(rd32(regs, Int((unit >> 12) & 0x0F))))              // int-to-long
+            case 0x84: wr32(&regs, Int((unit >> 8) & 0x0F), s32(rdW(regs, Int((unit >> 12) & 0x0F))))              // long-to-int
+            case 0x8D: wr32(&regs, Int((unit >> 8) & 0x0F), s8(rd32(regs, Int((unit >> 12) & 0x0F))))              // int-to-byte
+            case 0x8E: wr32(&regs, Int((unit >> 8) & 0x0F), rd32(regs, Int((unit >> 12) & 0x0F)) & 0xFFFF)         // int-to-char
+            case 0x8F: wr32(&regs, Int((unit >> 8) & 0x0F), s16(rd32(regs, Int((unit >> 12) & 0x0F))))             // int-to-short
             case 0x82, 0x83, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C:
                 throw SDRAppError(.dexOpUnsupported,
                                   "\(SDRDexOpcode.name(opcode: opcode)) 属浮点转换族，待阶段五实现 @pc=\(pc)")
 
             // ---- 0x90-0x9A int 二元 ----
             case 0x90...0x9A:
-                let a = Int(unit & 0x0F)
-                let b = rd32(regs, Int((unit >> 4) & 0x0F))
-                let c = rd32(regs, Int(unit >> 8))
+                let a = Int(unit >> 8)
+                let b = rd32(regs, Int(u1(code, pc + 1) & 0xFF))
+                let c = rd32(regs, Int(u1(code, pc + 1) >> 8))
                 let value = try intBinary(Self.intOps[opcode - 0x90], b, c)
                 wr32(&regs, a, value)
 
             // ---- 0x9B-0xA5 long 二元 ----
             case 0x9B...0xA5:
-                let a = Int(unit & 0x0F)
-                let b = rdW(regs, Int((unit >> 4) & 0x0F))
-                let c = rdW(regs, Int(unit >> 8))
+                let a = Int(unit >> 8)
+                let b = rdW(regs, Int(u1(code, pc + 1) & 0xFF))
+                let c = rdW(regs, Int(u1(code, pc + 1) >> 8))
                 let value = try longBinary(Self.longOps[opcode - 0x9B], b, c)
                 wrW(&regs, a, value)
 
@@ -606,15 +608,15 @@ public final class SDRDexInterpreter {
 
             // ---- 0xB0-0xBA int /2addr ----
             case 0xB0...0xBA:
-                let a = Int(unit & 0x0F)
-                let b = rd32(regs, Int((unit >> 4) & 0x0F))
+                let a = Int((unit >> 8) & 0x0F)
+                let b = rd32(regs, Int((unit >> 12) & 0x0F))
                 let value = try intBinary(Self.intOps[opcode - 0xB0], rd32(regs, a), b)
                 wr32(&regs, a, value)
 
             // ---- 0xBB-0xC5 long /2addr ----
             case 0xBB...0xC5:
-                let a = Int(unit & 0x0F)
-                let b = rdW(regs, Int((unit >> 4) & 0x0F))
+                let a = Int((unit >> 8) & 0x0F)
+                let b = rdW(regs, Int((unit >> 12) & 0x0F))
                 let value = try longBinary(Self.longOps[opcode - 0xBB], rdW(regs, a), b)
                 wrW(&regs, a, value)
 
@@ -625,17 +627,17 @@ public final class SDRDexInterpreter {
 
             // ---- 0xD0-0xD7 int/lit16 ----
             case 0xD0...0xD7:
-                let a = Int(unit & 0x0F)
-                let b = rd32(regs, Int((unit >> 4) & 0x0F))
+                let a = Int((unit >> 8) & 0x0F)
+                let b = rd32(regs, Int((unit >> 12) & 0x0F))
                 let lit = Int64(Int16(bitPattern: u1(code, pc + 1)))
                 let value = try intBinary(Self.intOps[opcode - 0xD0], b, lit)
                 wr32(&regs, a, value)
 
             // ---- 0xD8-0xE2 int/lit8 ----
             case 0xD8...0xE2:
-                let a = Int((unit >> 8) & 0x0F)
-                let b = rd32(regs, Int((unit >> 12) & 0x0F))
-                let lit = s8(Int64(u1(code, pc + 1) & 0xFF))
+                let a = Int(unit >> 8)
+                let b = rd32(regs, Int(u1(code, pc + 1) & 0xFF))
+                let lit = s8(Int64(u1(code, pc + 1) >> 8))
                 let value = try intBinary(Self.intOps[opcode - 0xD8], b, lit)
                 wr32(&regs, a, value)
 

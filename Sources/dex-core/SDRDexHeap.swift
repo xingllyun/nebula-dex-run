@@ -31,7 +31,8 @@ import Foundation
 
 /// DEX 解释器托管堆：数组 / 实例 / 字符串 / 类引用。
 ///
-/// 句柄统一编码为 `tag << 60 | index`（始终为正数，不会与 32 位整数常量混淆）；
+/// 句柄统一编码为 `tag << 28 | index`：tag 与 index 均落在 32 位以内，
+/// 保证句柄经 DEX 32 位寄存器（wr32/rd32 走 Int32 截断）传递时高位不丢失。
 /// 0 表示 null。宽字段与宽数组元素统一以 Int64 存放，高 32 位按 DEX 语义截断。
 public final class SDRDexHeap {
 
@@ -50,11 +51,11 @@ public final class SDRDexHeap {
     public private(set) var instances: [InstanceObject] = []
     public private(set) var stringPool: [String] = []
 
-    public static let tagMask: Int64 = 0xF << 60
-    public static let arrayTag: Int64 = 1 << 60
-    public static let instanceTag: Int64 = 2 << 60
-    public static let stringTag: Int64 = 3 << 60
-    public static let classTag: Int64 = 4 << 60
+    public static let tagMask: Int64 = 0xF << 28
+    public static let arrayTag: Int64 = 1 << 28
+    public static let instanceTag: Int64 = 2 << 28
+    public static let stringTag: Int64 = 3 << 28
+    public static let classTag: Int64 = 4 << 28
 
     public init() {}
 

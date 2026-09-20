@@ -156,9 +156,11 @@ public final class SDRDexFile {
             r.seek(Int(header.stringIdsOff) + i * 4)
             guard let off = r.u32() else { break }
             r.seek(Int(off))
-            guard let _ = r.uleb128(), let n = r.uleb128() else { break }
-            guard let raw = r.bytes(Int(n) + 1) else { break }
-            strings.append(String(decoding: raw.dropLast(), as: UTF8.self))
+            // string_data_item = uleb128(utf16_size) + MUTF-8 字节序列 + 0x00 终止符
+            guard let _ = r.uleb128() else { break }
+            var raw: [UInt8] = []
+            while let b = r.u8(), b != 0 { raw.append(b) }
+            strings.append(String(decoding: raw, as: UTF8.self))
         }
         self.strings = strings
 
@@ -182,23 +184,23 @@ public final class SDRDexFile {
         }
         self.protoIds = protos
 
-        // field_ids（8 字节：class / type / name）
+        // field_ids（8 字节：class(u16) / type(u16) / name(u32)）
         var fields: [SDRDexFieldId] = []
         fields.reserveCapacity(Int(header.fieldIdsSize))
         for i in 0..<Int(header.fieldIdsSize) {
             r.seek(Int(header.fieldIdsOff) + i * 8)
-            guard let c = r.u32(), let t = r.u32(), let n = r.u32() else { break }
-            fields.append(SDRDexFieldId(classIdx: c, typeIdx: t, nameIdx: n))
+            guard let c = r.u16(), let t = r.u16(), let n = r.u32() else { break }
+            fields.append(SDRDexFieldId(classIdx: UInt32(c), typeIdx: UInt32(t), nameIdx: n))
         }
         self.fieldIds = fields
 
-        // method_ids（8 字节：class / proto / name）
+        // method_ids（8 字节：class(u16) / proto(u16) / name(u32)）
         var methods: [SDRDexMethodId] = []
         methods.reserveCapacity(Int(header.methodIdsSize))
         for i in 0..<Int(header.methodIdsSize) {
             r.seek(Int(header.methodIdsOff) + i * 8)
-            guard let c = r.u32(), let p = r.u32(), let n = r.u32() else { break }
-            methods.append(SDRDexMethodId(classIdx: c, protoIdx: p, nameIdx: n))
+            guard let c = r.u16(), let p = r.u16(), let n = r.u32() else { break }
+            methods.append(SDRDexMethodId(classIdx: UInt32(c), protoIdx: UInt32(p), nameIdx: n))
         }
         self.methodIds = methods
 
@@ -458,9 +460,10 @@ public enum SDRDexParser {
             r.seek(Int(header.stringIdsOff) + i * 4)
             guard let offset = r.u32() else { break }
             r.seek(Int(offset))
-            guard let _ = r.uleb128(), let count = r.uleb128() else { break }
-            guard let raw = r.bytes(Int(count) + 1) else { break }
-            result.append(String(decoding: raw.dropLast(), as: UTF8.self))
+            guard let _ = r.uleb128() else { break }
+            var raw: [UInt8] = []
+            while let b = r.u8(), b != 0 { raw.append(b) }
+            result.append(String(decoding: raw, as: UTF8.self))
         }
         return result
     }
