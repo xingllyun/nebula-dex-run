@@ -97,11 +97,12 @@ public final class SDRTexturePool {
             mipmapped: false)
         descriptor.usage = usage
         descriptor.storageMode = .private
-        descriptor.label = "render.pool.\(key.width)x\(key.height).\(format.rawValue)"
 
         guard let created = device.makeTexture(descriptor: descriptor) else {
             throw SDRRenderError.textureAllocationFailed("\(key.width)x\(key.height) \(format.rawValue)")
         }
+        // MTLTextureDescriptor 无 label：标签只能在纹理创建后设在资源对象上
+        created.label = "render.pool.\(key.width)x\(key.height).\(format.rawValue)"
 
         lock.lock()
         misses += 1

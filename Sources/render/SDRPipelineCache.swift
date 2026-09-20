@@ -165,7 +165,6 @@ public final class SDRPipelineCache {
         }
 
         let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.label = key.debugName
         descriptor.vertexFunction = vertexFunction
         descriptor.fragmentFunction = fragmentFunction
         descriptor.rasterSampleCount = max(key.sampleCount, 1)
@@ -175,7 +174,9 @@ public final class SDRPipelineCache {
         SDRBlendConfigurator.apply(key.blend, to: attachment)
 
         do {
-            return try device.makeRenderPipelineState(descriptor: descriptor)
+            let state = try device.makeRenderPipelineState(descriptor: descriptor)
+            state.label = key.debugName   // MTLRenderPipelineDescriptor 无 label，标签设在状态对象上
+            return state
         } catch {
             throw SDRRenderError.pipelineBuildFailed("\(key.debugName)：\(error)")
         }

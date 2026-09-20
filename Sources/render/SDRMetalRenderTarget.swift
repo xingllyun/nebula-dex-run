@@ -112,7 +112,7 @@ public final class SDRMetalRenderTarget {
 
         descriptor.renderTargetWidth = drawable.texture.width
         descriptor.renderTargetHeight = drawable.texture.height
-        descriptor.label = "render.pass"
+        // MTLRenderPassDescriptor 无 label：pass 标识由渲染编码器标签承担（见 SDRRenderLoop）
         return (descriptor, drawable)
     }
 
@@ -140,11 +140,11 @@ public final class SDRMetalRenderTarget {
         descriptor.sampleCount = sampleCount
         descriptor.usage = .renderTarget
         descriptor.storageMode = supportsMemoryless ? .memoryless : .private
-        descriptor.label = "render.msaa.\(width)x\(height)"
 
         guard let created = device.makeTexture(descriptor: descriptor) else {
             throw SDRRenderError.textureAllocationFailed("MSAA \(width)x\(height) x\(sampleCount)")
         }
+        created.label = "render.msaa.\(width)x\(height)"
         msaaTexture = created
         multisampleReallocations += 1
         return created
