@@ -152,6 +152,14 @@ public class DexExpect {
         p("LNebulaDexFloat;->greaterD(DD)I", (long) (NebulaDexFloat.greaterD(Double.longBitsToDouble(4611686018427387904L), Double.longBitsToDouble(4607182418800017408L))));
         p("LNebulaDexFloat;->greaterD(DD)I", (long) (NebulaDexFloat.greaterD(Double.longBitsToDouble(4607182418800017408L), Double.longBitsToDouble(9221120237041090560L))));
 
+        // ---------- NebulaDexVirtual：虚方法分派（覆写 / invoke-super / 接口） ----------
+        p("LNebulaDexVirtual;->polySquareArea(I)I", NebulaDexVirtual.polySquareArea(6));
+        p("LNebulaDexVirtual;->polyCubeDescribe(I)I", NebulaDexVirtual.polyCubeDescribe(3));
+        p("LNebulaDexVirtual;->cubeSuperArea(I)I", NebulaDexVirtual.cubeSuperArea(3));
+        p("LNebulaDexVirtual;->baseDescribe(I)I", NebulaDexVirtual.baseDescribe(4));
+        p("LNebulaDexVirtual;->ifaceCount(I)I", NebulaDexVirtual.ifaceCount(5));
+        p("LNebulaDexVirtual;->mixed(I)I", NebulaDexVirtual.mixed(7));
+
         // ---------- NebulaDexThrow：异常模型（try / catch / finally / 跨帧） ----------
         p("LNebulaDexThrow;->catchArith(II)I", NebulaDexThrow.catchArith(9, 3));
         p("LNebulaDexThrow;->catchArith(II)I", NebulaDexThrow.catchArith(9, 0));

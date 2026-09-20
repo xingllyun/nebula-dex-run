@@ -157,6 +157,10 @@ public final class SDRDexFile {
         return map
     }()
 
+    /// method_idx → accessFlags（惰性全量索引，供 isStaticMethod 判定 this 槽位）
+    private var methodAccessFlags: [UInt32: UInt32] = [:]
+    private var methodAccessIndexBuilt = false
+
     /// 类描述符（"Lcls;"）→ class_defs 下标
     public private(set) lazy var classIndex: [String: Int] = {
         var map: [String: Int] = [:]
@@ -342,6 +346,52 @@ public final class SDRDexFile {
     // MARK: - 查找
 
     public func findMethodIndex(_ signature: String) -> UInt32? { signatureIndex[signature] }
+
+    /// 方法是否静态（决定调用点是否占用 this 寄存器、解释器是否装配 receiver）
+    ///
+    /// DEX 的 `method_idx` 只指向 proto/cls/name，访问标志必须回到 class_data 的 encoded_method 反查；
+    /// 首次查询时全量扫描一遍并常驻 `methodAccessFlags`，之后为 O(1)。
+    /// 未在 class_data 中出现的方法（外部方法 / native）按静态处理——它们不进入解释器的方法体装配路径。
+    public func isStaticMethod(at idx: UInt32) -> Bool {
+        if !methodAccessIndexBuilt {
+            for def in classDefs where def.classDataOff != 0 {
+                for m in methods(ofClass: typeDescriptor(at: def.classIdx)) {
+                    methodAccessFlags[m.methodIdx] = m.accessFlags
+                }
+            }
+            methodAccessIndexBuilt = true
+        }
+        guard let flags = methodAccessFlags[idx] else { return true }
+        return (flags & 0x0008) != 0
+    }
+
+    /// 虚方法表索引化入口：按 receiver 实际类型解析覆写目标
+    ///
+    /// 语义（阶段四口径）：
+    ///   1. 从 `receiverDescriptor` 自身出发沿超类链上行，逐层用「类描述符 + 调用点的方法尾（`->name(proto)ret`）」拼签名查表；
+    ///   2. 首次命中即为**最具体覆写**（Java 单继承下的虚分派结果），直接返回其 `method_idx`；
+    ///   3. 链上出现 dex 之外的类型（`java.lang.*` 等）或链深超过 32 层即判定「无覆写」，返回 nil，
+    ///      由调用方沿用调用点声明的 method_idx —— 只可能落到声明实现或「外部方法无实现」的显式报错，
+    ///      **绝不静默返回 0**。
+    ///
+    /// - Note: 只做「同名 + 同 proto」精确匹配，不展开接口实现关系（接口方法由实现类的同名方法命中，
+    ///         阶段五接入 Java 运行时后再交由其类型系统处理协变等高级语义）。
+    public func resolveVirtualMethod(declaredSignature: String,
+                                     receiverDescriptor: String) -> UInt32? {
+        guard let arrow = declaredSignature.range(of: "->") else { return nil }
+        let tail = String(declaredSignature[arrow.lowerBound...])   // "->name(proto)ret"
+        var current = receiverDescriptor
+        var depth = 0
+        while depth < 32 && !current.isEmpty {
+            depth += 1
+            if let hit = signatureIndex[current + tail] { return hit }
+            guard let def = findClassDef(current) else { return nil }
+            let superDesc = typeDescriptor(at: def.superclassIdx)
+            if superDesc == current { break }
+            current = superDesc
+        }
+        return nil
+    }
 
     /// 内建 JDK 类型层次（dex 之外的类型链，异常族为 catch 匹配主力）
     ///

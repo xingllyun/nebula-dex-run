@@ -90,12 +90,12 @@ public final class SDRDexInterpreter {
     //   1) methodInfoCache —— 常量池预解析：method_idx → (签名, 参数短名表)
     //   2) codeCache       —— 方法体缓存：method_idx → (指令流, 寄存器数, 异常表)
     //   3) fieldKeyCache   —— 静态字段缓存：避免 sget/sput 每轮重拼字段签名
-    //   4) resolvedMethodCache —— 虚方法表索引化：签名 → method_idx 一次解析
+    //   4) virtualDispatchCache —— 虚方法表索引化：「receiver 实际类型 + 方法尾」→ 覆写 method_idx 一次解析
     private var methodInfoCache: [UInt32: (signature: String, paramTypes: [String])] = [:]
     private var codeCache: [UInt32: (insns: [UInt16], registers: Int,
                                      insSize: Int, tries: [SDRDexTryBlock])] = [:]
     private var fieldKeyCache: [UInt32: String] = [:]
-    private var resolvedMethodCache: [String: UInt32] = [:]
+    private var virtualDispatchCache: [String: UInt32] = [:]
 
     /// 常量池预解析：方法签名与参数短名表（J/D 占两个寄存器槽）
     private func methodInfo(at idx: UInt32) -> (signature: String, paramTypes: [String]) {
@@ -127,6 +127,25 @@ public final class SDRDexInterpreter {
         let signature = file?.fieldSignature(at: idx) ?? "?->?:?"
         fieldKeyCache[idx] = signature
         return signature
+    }
+
+    /// 虚方法表索引化：解析 invoke-virtual / invoke-interface 的实际执行目标
+    ///
+    /// - key 取「receiver 实际类型 + 调用点方法尾」，一次解析后常驻；
+    ///   未覆写以 `UInt32.max` 记入缓存（与「尚未解析」区分），避免每轮重复走类层次。
+    /// - receiver 为 0（null）时不介入：交由既有链路按声明签名处置，不在此处伪造 NPE 语义。
+    private func virtualTarget(declaredSignature: String, receiver: Int64) -> UInt32? {
+        guard receiver != 0, let dex = file else { return nil }
+        guard let recvDesc = heap.instanceDescriptor(receiver) ?? heap.arrayDescriptor(receiver),
+              let arrow = declaredSignature.range(of: "->") else { return nil }
+        let key = recvDesc + declaredSignature[arrow.lowerBound...]
+        if let cached = virtualDispatchCache[key] {
+            return cached == UInt32.max ? nil : cached
+        }
+        let resolved = dex.resolveVirtualMethod(declaredSignature: declaredSignature,
+                                                receiverDescriptor: recvDesc)
+        virtualDispatchCache[key] = resolved ?? UInt32.max
+        return resolved
     }
 
     /// 热点方法预热（阶段四「热点方法快速路径 / AOT 前置」）：预解析方法体与常量池信息
@@ -208,8 +227,20 @@ public final class SDRDexInterpreter {
         var regs = [Int64](repeating: 0, count: min(max(registerCount, 0), maxRegisters))
         let proto = file?.methodParts(at: methodIndex).proto ?? "()V"
         let types = SDRDexInterpreter.paramTypes(proto)
+        let label = file?.methodSignature(at: methodIndex) ?? "method#\(methodIndex)"
+        // 实例方法的第一个 in 寄存器是 this：callerArgs 约定为「[receiver, 参数...]」，
+        // 缺失即显式报错——绝不拿第一个实参冒充 this（错位会静默产出错误结果）。
+        var params = callerArgs
         var slot = max(0, regs.count - insSize)
-        for (t, v) in zip(types, callerArgs) {
+        if !(file?.isStaticMethod(at: methodIndex) ?? true) {
+            guard let receiver = callerArgs.first else {
+                throw SDRAppError(.dexOpUnsupported, "实例方法调用缺少 receiver：\(label)")
+            }
+            wr32(&regs, slot, receiver)
+            slot += 1
+            params = Array(callerArgs.dropFirst())
+        }
+        for (t, v) in zip(types, params) {
             if t == "J" || t == "D" {
                 wrW(&regs, slot, v)
                 slot += 2
@@ -218,7 +249,6 @@ public final class SDRDexInterpreter {
                 slot += 1
             }
         }
-        let label = file?.methodSignature(at: methodIndex) ?? "method#\(methodIndex)"
         frames.append(Frame(registers: regs, pc: 0, methodIndex: Int(methodIndex), method: label))
         defer { frames.removeLast() }
         return try execute(code: code, regs: &regs, methodIndex: methodIndex, tries: tries)
@@ -653,11 +683,17 @@ public final class SDRDexInterpreter {
                 let info = methodInfo(at: methodIdx)
                 let signature = info.signature
                 let types = info.paramTypes
+                // invoke-static（0x71 / 0x77）不占 this 槽；其余 invoke 族的首寄存器即 receiver
+                let isStaticInvoke = (opcode == 0x71 || opcode == 0x77)
+                var receiverValue: Int64 = 0
                 var args: [Int64] = []
                 if opcode >= 0x74 {
-                    let count = Int(unit >> 8)
                     var slot = Int(u1(code, pc + 2))
-                    for t in types.prefix(count) {
+                    if !isStaticInvoke {
+                        receiverValue = rd32(regs, slot)
+                        slot += 1
+                    }
+                    for t in types {
                         if t == "J" || t == "D" { args.append(rdW(regs, slot)); slot += 2 } else { args.append(rd32(regs, slot)); slot += 1 }
                     }
                 } else {
@@ -667,6 +703,10 @@ public final class SDRDexInterpreter {
                     for i in 0..<4 { slots.append(Int((word >> (4 * i)) & 0x0F)) }
                     if count >= 5 { slots.append(Int((unit >> 8) & 0x0F)) }
                     var cursor = 0
+                    if !isStaticInvoke, !slots.isEmpty {
+                        receiverValue = rd32(regs, slots[0])
+                        cursor = 1
+                    }
                     for t in types {
                         guard cursor < slots.count else { break }
                         if t == "J" || t == "D" {
@@ -678,7 +718,18 @@ public final class SDRDexInterpreter {
                         }
                     }
                 }
-                result = try invokeResolved(signature: signature, methodIndex: methodIdx, args: args)
+                if !isStaticInvoke { args.insert(receiverValue, at: 0) }
+                // 虚分派（0x6E virtual / 0x72 interface 及 range 版 0x74 / 0x78）：
+                // 按 receiver 实际类型解析覆写目标，命中即以覆写方法体执行；未覆写沿用声明 method_idx。
+                var callIndex = methodIdx
+                var callSignature = signature
+                if opcode == 0x6E || opcode == 0x72 || opcode == 0x74 || opcode == 0x78,
+                   let target = virtualTarget(declaredSignature: signature, receiver: receiverValue),
+                   target != methodIdx {
+                    callIndex = target
+                    callSignature = file?.methodSignature(at: target) ?? signature
+                }
+                result = try invokeResolved(signature: callSignature, methodIndex: callIndex, args: args)
 
             // ---- 0x7B-0x80 neg/not 族 ----
             case 0x7B: wr32(&regs, Int((unit >> 8) & 0x0F), s32(0 &- s32(rd32(regs, Int((unit >> 12) & 0x0F)))))   // neg-int

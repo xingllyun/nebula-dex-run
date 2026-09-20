@@ -18,12 +18,12 @@ AIGC:
 
 | 文件 | 作用 |
 |------|------|
-| `src/*.java` | Java 样本（`NebulaDexProbe` / `NebulaDexFlow` / `NebulaDexSwitch` / `NebulaDexWide` / `NebulaDexFloat`），覆盖常量装载、int/long 二元运算、控制流、数组、静态字段、跨类调用、分支表，以及 float/double 二元（23x 与 /2addr）、neg、int/long/float/double 互转、cmp-float/double |
+| `src/*.java` | Java 样本（`NebulaDexProbe` / `NebulaDexFlow` / `NebulaDexSwitch` / `NebulaDexWide` / `NebulaDexFloat` / `NebulaDexVirtual` / `NebulaDexThrow`），覆盖常量装载、int/long 二元运算、控制流、数组、静态字段、跨类调用、分支表、float/double 二元（23x 与 /2addr）、neg、互转与 cmp、虚方法分派（覆写 / `invoke-super` / 接口 / 同一调用点多 receiver）、异常模型 |
 | `src/DexExpect.java` | 期望值驱动：在 JVM 上按固定顺序调用样本方法，打印 `签名=值` |
 | `cases.json` | 用例清单（签名 + 实参），顺序与 `DexExpect.java` **严格一致**；静态字段跨用例累积，顺序即语义 |
 | `main.swift` | Swift 侧驱动：装载 d8 产出的 `classes.dex`，逐用例执行并打印同格式清单 |
 
-当前规模：**115 个用例**（整数与长整数族 57 + 浮点族 58）。
+当前规模：**136 个用例**（整数与长整数族 57 + 浮点族 58 + 虚方法分派族 6 + 异常模型族 15）。
 
 ## 运行方式
 

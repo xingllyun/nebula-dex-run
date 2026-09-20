@@ -185,17 +185,26 @@ AIGC:
 | 文件 | 行数 | 说明 |
 |------|------|------|
 | `SDRDexOpcode.swift` | 223 | Dalvik 指令名 / 宽度 / 未定义槽位表 |
-| `SDRDexParser.swift` | 589 | 文件头 + 字符串/类型/proto/字段/方法 id 表 + class_def/class_data + code_item 懒加载 + try_item/encoded_catch_handler 异常表解析 |
-| `SDRDexInterpreter.swift` | 1148 | 指令主循环：move/const/整数与浮点全量运算/分支/数组/字段/invoke/long/浮点转换与 cmp 族，帧栈 + 静态字段 + try/catch/finally 异常模型（`SDRDexThrown` 跨帧传播 + 类层次匹配 + JDK 内联桩）+ 热路径缓存 |
+| `SDRDexParser.swift` | 639 | 文件头 + 字符串/类型/proto/字段/方法 id 表 + class_def/class_data + code_item 懒加载 + try_item/encoded_catch_handler 异常表解析 |
+| `SDRDexInterpreter.swift` | 1199 | 指令主循环：move/const/整数与浮点全量运算/分支/数组/字段/invoke/long/浮点转换与 cmp 族，帧栈 + 静态字段 + try/catch/finally 异常模型（`SDRDexThrown` 跨帧传播 + 类层次匹配 + JDK 内联桩）+ 热路径缓存（含虚方法表索引化 `virtualDispatchCache`、receiver 槽位装配） |
 | `SDRDexHeap.swift` | 160 | 对象 / 数组 / 字符串堆 |
 | `SDRDexLaunchPlan.swift` | 105 | 入口定位：main（含 `[Ljava/lang/String;` 注入）→ 类初始化 → 普通方法降级 |
 
-**合计 2,225 行**。`SDRAppContainer.launch` 已接入真实 DEX 解析与执行链路，不再是空跑。
+**合计 2,326 行**。`SDRAppContainer.launch` 已接入真实 DEX 解析与执行链路，不再是空跑。
 
-**验收口径**：dex-smoke 130 用例 JVM 原生输出 ↔ Swift 解释器输出逐行对拍，见 `Tests/dex/`。
+**验收口径**：dex-smoke 136 用例 JVM 原生输出 ↔ Swift 解释器输出逐行对拍，见 `Tests/dex/`。
 其中包含异常模型用例（`NebulaDexThrow`：try/catch/finally、隐式 NPE 与数组越界、
-自定义异常父子类型匹配、多 catch 顺序、跨帧传播与 finally 重抛），
-以及 1 条 `expectError: true` 用例（顶层未捕获异常，两侧统一输出 `<ERROR>`）。
+自定义异常父子类型匹配、多 catch 顺序、跨帧传播与 finally 重抛）、1 条 `expectError: true`
+用例（顶层未捕获异常，两侧统一输出 `<ERROR>`），以及虚方法分派用例
+（`NebulaDexVirtual`：基类引用指向子类实例、基类方法体内的虚调用、`invoke-super` 固定父实现、
+接口分派、同一调用点先后两种 receiver —— 验证 `virtualDispatchCache` 按实际类型分桶）。
+
+**虚方法分派（阶段四）**：`invoke-virtual` / `invoke-interface` 由
+`SDRDexParser.resolveVirtualMethod(declaredSignature:receiverDescriptor:)` 沿 receiver 实际类型的
+超类链逐层匹配「同名 + 同 proto」签名，首命中即最具体覆写；解释器侧 `virtualTarget` 以
+「实际类型 + 方法尾」为 key 缓存结果（未覆写记 `UInt32.max` 哨兵），`invoke-super` / `invoke-direct`
+不参与虚分派。同时补齐实例方法的 receiver 槽位：非 static 的 invoke 族首寄存器即 this，
+入口约定为 `[receiver, 参数...]`，缺失时显式报错而非错位执行。
 
 ### 3.12 Metal 渲染层（阶段四）
 
@@ -340,7 +349,7 @@ ret                           // 按 AAPCS64 返回
 |--------|------|
 | `ios-build.yml` | 未签名 IPA 构建（macos-26 runner）；渲染层编译校验门禁（`Sources/render/**` 全量 `swiftc -typecheck`，出现 `error:` 即失败） |
 | `interp-test.yml` | AArch64 解释器冒烟测试（含 zip-smoke 13 用例、touch-smoke 20 用例） |
-| `dex-smoke.yml` | DEX 解释器对拍：javac → JVM 期望值；d8 → classes.dex → Swift 解释器，`diff -u` 逐行比对 |
+| `dex-smoke.yml` | DEX 解释器对拍：javac → JVM 期望值；d8 → classes.dex → Swift 解释器，`diff -u` 逐行比对（当前 136 用例，含虚方法分派族） |
 
 ### 6.2 测试覆盖
 
@@ -396,8 +405,8 @@ output/nebula-dex-run/
 |------|------|------|
 | 阶段一 | AArch64 指令集补全（乘法除法、浮点 NEON/VFP、异常与系统调用、性能优化） | ✅ 完成 |
 | 阶段二 | 原生系统库与系统调用层（syscall/最小libc/ELF装载/Android基础库） | ✅ 完成 |
-| 阶段三 | DEX 解释器核心（解析 / 指令 / 堆 / 入口定位） | ✅ 已收口（对拍链路就绪，当前 130 用例） |
-| 阶段四 | Java 运行时与安卓 API 框架、Skia Metal 渲染层、触控与生命周期、性能与体积填充 | 🚧 进行中（浮点族 36 条 + 异常模型已落地 130 用例全绿；Metal 渲染层 2,901 行 + 触控路由 358 行已落地，CI 编译门禁与 touch-smoke 就绪） |
+| 阶段三 | DEX 解释器核心（解析 / 指令 / 堆 / 入口定位） | ✅ 已收口（对拍链路就绪，当前 136 用例） |
+| 阶段四 | Java 运行时与安卓 API 框架、Skia Metal 渲染层、触控与生命周期、性能与体积填充 | 🚧 进行中（136 用例全绿，其中虚方法分派 + receiver 槽位装配已落地；Metal 渲染层 2,901 行 + 触控路由 358 行已落地，CI 编译门禁与 touch-smoke 就绪） |
 | 阶段五 | 周边能力与稳定性收尾（凭证迁移/签名增强等） | 🚧 待开发 |
 
 ---

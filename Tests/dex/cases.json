@@ -119,6 +119,13 @@
     { "signature": "LNebulaDexFloat;->lessD(DD)I", "args": [9221120237041090560, 4607182418800017408] },
     { "signature": "LNebulaDexFloat;->greaterD(DD)I", "args": [4611686018427387904, 4607182418800017408] },
     { "signature": "LNebulaDexFloat;->greaterD(DD)I", "args": [4607182418800017408, 9221120237041090560] },
+    { "signature": "LNebulaDexVirtual;->polySquareArea(I)I", "args": [6] },
+    { "signature": "LNebulaDexVirtual;->polyCubeDescribe(I)I", "args": [3] },
+    { "signature": "LNebulaDexVirtual;->cubeSuperArea(I)I", "args": [3] },
+    { "signature": "LNebulaDexVirtual;->baseDescribe(I)I", "args": [4] },
+    { "signature": "LNebulaDexVirtual;->ifaceCount(I)I", "args": [5] },
+    { "signature": "LNebulaDexVirtual;->mixed(I)I", "args": [7] },
+
     { "signature": "LNebulaDexThrow;->catchArith(II)I", "args": [9, 3] },
     { "signature": "LNebulaDexThrow;->catchArith(II)I", "args": [9, 0] },
     { "signature": "LNebulaDexThrow;->nullArrayLength()I", "args": [] },
